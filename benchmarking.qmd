@@ -1,0 +1,1829 @@
+---
+title: "Allele tools benchmarking"
+author: "A.Mikelov"
+format:
+  html:
+    grid: 
+      body-width: 2000px
+      sidebar-width: 200px
+      margin-width: 200px
+editor: visual
+
+execute:
+  warning: false
+  message: false
+  error: false
+---
+
+## Libraries, helper functions, references, colors
+
+```{r}
+#load libraries
+{
+  library(dplyr)
+  library(tibble)
+  library(readr)
+  library(magrittr)
+  library(tidyr)
+  library(stringr)
+  library(ggplot2)
+  library(fuzzyjoin)
+  library(plotly)
+  library(seqinr)
+  library(msa)
+  library(conflicted)
+  library(ggrepel)
+  library(cowplot)
+  library(tigger)
+  library(bench)
+  #library(ggiraph)
+  
+  conflicts_prefer(dplyr::filter)
+  conflicts_prefer(dplyr::first)
+  conflicts_prefer(dplyr::count)
+  conflicts_prefer(dplyr::select)
+  conflicts_prefer(dplyr::rename)
+  conflicts_prefer(base::unique)
+    
+  `%+%` <- function(a, b) paste0(a, b)
+  
+  mi_bright<-c("#42B842",
+    "#845CFF",
+    "#FF9429",
+    "#27C2C2",
+    "#E553E5",
+    "#95C700",
+    "#2D93FA",
+    "#F05670",
+    "#929BAD")
+  
+  mi_dark<-c(
+  "#198020",
+  "#5F31CC",
+  "#C26A27",
+  "#068A94",
+  "#A324B2",
+  "#659406",
+  "#105BCC",
+  "#AD3757",
+  "#5E5E70"
+  
+)
+
+mi_27<-c(
+  "#99E099","#198020","#42B842","#C1ADFF","#845CFF","#5F31CC","#FFCB8F",
+  "#FF9429","#C26A27","#90E0E0","#27C2C2","#068A94","#FAAAFA","#E553E5",
+  "#A324B2","#CBEB67","#95C700","#659406","#99CCFF","#2D93FA","#105BCC",
+  "#FFADBA","#F05670","#AD3757","#D3D7E0","#929BAD","#5E5E70"
+)
+
+##Load IUIS-named allele sequences ----
+iuis_ref<-readDNAStringSet("~/ref/imgt-repseqio_100423/imgt_vj.fasta")
+iuis_ref<-tibble(alleleSeq=as.character(iuis_ref),
+                 alleleName=names(iuis_ref) %>% str_remove("\\|.*"))
+
+
+##Load starting reference for MiXCR (assembled from C.Watson lab ref genome) ----
+startingRef<-readDNAStringSet("~/.mixcr/libraries/watsonlab_lib.v.fasta")  %>% 
+  as.character() %>% 
+  c(readDNAStringSet("~/.mixcr/libraries/watsonlab_lib.j.fasta") %>% 
+      as.character())
+
+}
+```
+
+# Upstream processing AIRR-seq data
+
+## Trim primers from Non-UMI data
+
+```{bash}
+ls *R1.fastq| parallel -j 6 --line-buffer 'seqtk trimfq -b 19 {} > primerTrimmed/{}'
+```
+
+## Prepare a table for downsampling raw reads
+
+```{r}
+depth_corey<-read_tsv("~/paper_alleles/oscar-coreyw_stats.tsv",
+                      col_names = c("sra","donor","gz","umi_matched","totalRows","totalReads","fractionMatched"))
+
+tibble(sra=rep(depth_corey$sra,5) %>% sort(),
+       depth=rep(c(10000,25000,50000,100000,500000),length.out=360)) %>% 
+  #bind_rows(depth_corey %>% select(sra,totalReads) %>% rename(depth=totalReads)) %>% 
+  left_join(depth_corey %>% select(sra,totalReads),
+            by="sra") %>%
+  filter(depth<=totalReads) %>%
+  select(sra,depth) %>% 
+  write_tsv("~/paper_alleles/benchmarking/oscar-coreyw-downsampling_depth.tsv",col_names = F)
+```
+
+## Downsample reads with [seqtk]{.underline}
+
+```{bash}
+cat oscar-coreyw-downsampling_depth.tsv | parallel --colsep '\t' -j3 'sample_depth_k=$(echo "{2}/1000" | bc); \
+	input_files=( $(find ~/paper_alleles/raw0/watson/5race -type f -name "{1}*R2*.fastq") \
+	$(find ~/paper_alleles/raw0/watson/noumi/primerTrimmed -type f -name "{1}*R2*.fastq") ); \
+	input_file="${input_files}"; \
+	input_file=$(echo "$input_file" | sed "s|/qualityModified/primerTrimmed||g"); \
+	output_file="${input_file}_${sample_depth_k}K.fastq"; \
+	seqtk sample -s1707 "$input_file" "{2}" > "$output_file"'
+	
+	
+cat oscar-coreyw-downsampling_depth.tsv | parallel --colsep '\t' -j3 'sample_depth_k=$(echo "{2}/1000" | bc); \
+	input_files=( $(find ~/paper_alleles/raw0/watson/5race -type f -name "{1}*R1*.fastq") \
+	$(find ~/paper_alleles/raw0/watson/noumi/primerTrimmed -type f -name "{1}*R1*.fastq") ); \
+	echo $input_files; \
+	input_file="${input_files}"; \
+	input_file=$(echo "$input_file" | sed "s|/qualityModified/primerTrimmed||g"); \
+	output_file="${input_file}_${sample_depth_k}K.fastq"; \
+	echo $output_file;\
+	seqtk sample -s1707 "$input_file" "{2}" > "$output_file"'
+
+mkdir /paper_alleles/raw0/watson/downsampled/5race
+mkdir /paper_alleles/raw0/watson/downsampled/noumi
+cd /paper_alleles/raw0/watson/5race/
+mv *K.fastq ../downsampled/5race/
+
+cd /paper_alleles/raw0/watson/noumi/primerTrimmed/
+mv *K.fastq ../downsampled/noumi/
+
+	
+```
+
+## [MiXCR]{.underline} upstream pipeline for full and downsampled data using minimal library (=1 allele per V/J gene)
+
+## Immcantation upstream pipeline for full and downsampled data using minimal library (=1 allele per V/J gene)
+
+### Data with UMI
+
+#### Quality filtering
+
+```{bash}
+
+cd /paper_alleles/raw0/watson/downsampled/5race
+
+
+ls *fastq |parallel --line-buffer -j 48 \
+  'docker run -v /home/amikelov/paper_alleles/:/home/amikelov/paper_alleles/ \
+    immcantation/suite:4.4.0 FilterSeq.py quality \
+    -s /home/amikelov/paper_alleles/raw0/watson/downsampled/5race/{} \
+    -q 20 \
+    --outdir /home/amikelov/paper_alleles/benchmarking/immcantation/downsampled/5race'
+```
+
+#### Extract barcodes/primers
+
+```{bash}
+ls /home/amikelov/paper_alleles/benchmarking/immcantation/downsampled/5race/*_R2_*.fastq |parallel \
+  --line-buffer  -j 48 \
+  'docker run -v /home/amikelov/paper_alleles/:/home/amikelov/paper_alleles/ immcantation/suite:4.4.0 \
+             MaskPrimers.py score -s {} \
+             -p /home/amikelov/paper_alleles/benchmarking/immcantation/umi.fasta \
+             --start 12 --barcode --mode cut --maxerror 0.5 \
+             --outname {.} \
+             --log {= s::: =}.log'
+
+
+/home/amikelov/paper_alleles/benchmarking/immcantation/downsampled/5race/
+
+#ls *Extracted* |parallel -j 100 'mv {} {= s:.fastq_primers-pass:: =}'
+
+realpath *_R2_*_primers-pass.fastq | parallel -j 48  --line-buffer \
+  'docker run -v /home/amikelov/paper_alleles/:/home/amikelov/paper_alleles/ \
+   immcantation/suite:4.4.0 PairSeq.py \
+   -1 {= s:_primers-pass::;s:_R2_:_R1_: =} -2 {} \
+    --2f BARCODE --coord sra'
+
+```
+
+#### Build consensuses
+
+```{bash}
+realpath *_R1_*pair-pass.fastq | parallel -j 48 --line-buffer 'docker run -v /home/amikelov/paper_alleles/:/home/amikelov/paper_alleles/ immcantation/suite:4.4.0 BuildConsensus.py -s {} --bf BARCODE --maxerror 0.1 --outname {.} --log {.}.log'
+
+
+realpath *_R2_*pair-pass.fastq | parallel -j 48 --line-buffer 'docker run -v /home/amikelov/paper_alleles/:/home/amikelov/paper_alleles/ immcantation/suite:4.4.0 BuildConsensus.py -s {} --bf BARCODE --maxerror 0.1 --outname {.} --log {.}.log'
+
+
+realpath *_R2_*consensus-pass.fastq | parallel -j 48 --line-buffer 'docker run -v /home/amikelov/paper_alleles/:/home/amikelov/paper_alleles/ immcantation/suite:4.4.0 PairSeq.py -1 {= s:_primers-pass::;s:_R2_:_R1_: =} -2 {} --coord presto'
+```
+
+#### Assemble pairs from consensuses
+
+```{bash}
+realpath *_R2_*consensus-pass_pair-pass.fastq | parallel -j 4 --line-buffer  'docker run -v /home/amikelov/paper_alleles/:/home/amikelov/paper_alleles/ -w /home/amikelov/paper_alleles/ immcantation/suite:4.4.0 AssemblePairs.py align -1 {= s:_primers-pass::;s:_R2_:_R1_: =} -2 {} --coord presto --rc tail --1f CONSCOUNT --2f CONSCOUNT PRCONS --outname {= s:_R2::;s:_quality-pass_primers-pass_pair-pass_consensus-pass_pair-pass.fastq:: =} --log {.}.log'
+```
+
+#### Collapse UMI-duplicates
+
+```{bash}
+realpath *_assemble-pass.fastq | parallel -j 4 --line-buffer  'docker run -v /home/amikelov/paper_alleles/:/home/amikelov/paper_alleles/ immcantation/suite:4.4.0 ParseHeaders.py collapse -s {} -f CONSCOUNT --act min'
+
+
+realpath *_assemble-pass_reheader.fastq | parallel -j 4 --line-buffer  'docker run -v /home/amikelov/paper_alleles/:/home/amikelov/paper_alleles/ immcantation/suite:4.4.0 CollapseSeq.py -s {} -n 20 --inner --uf PRCONS --cf CONSCOUNT --act sum --outname {.}'
+
+```
+
+#### Filtering to sequences with at least two representative reads
+
+```{bash}
+realpath *_collapse-unique.fastq* | parallel -j 4 --line-buffer  'docker run -v /home/amikelov/paper_alleles/:/home/amikelov/paper_alleles/ immcantation/suite:4.4.0 SplitSeq.py group -s {} -f CONSCOUNT --num 2 --outname {= s:_collapse-unique.fastq:: =}'
+
+
+# realpath *_atleast-2.fastq | parallel -j 4 --line-buffer  'docker run -v /home/amikelov/paper_alleles/:/home/amikelov/paper_alleles/ immcantation/suite:4.4.0 ParseHeaders.py table -s {} -f ID PRCONS CONSCOUNT DUPCOUNT'
+```
+
+#### Run IgBlast
+
+```{bash}
+docker run --name igb -v /home/amikelov/:/home/amikelov/ -it immcantation/suite:4.4.0 /bin/bash
+mv /usr/local/share/germlines/imgt/human/vdj/imgt_human_IGHV.fasta /home/amikelov/paper_alleles/
+cp /home/amikelov/paper_alleles/watsonlab_IGH_VRegion_padded.fasta /usr/local/share/germlines/imgt/human/vdj/imgt_human_IGHV.fasta
+cp /home/amikelov/.mixcr/libraries/watsonlab_lib.v.fasta /usr/local/share/igblast/fasta/imgt_human_ig_v.fasta
+cp /home/amikelov/.mixcr/libraries/watsonlab_lib.j.fasta /usr/local/share/igblast/fasta/imgt_human_ig_j.fasta
+cp /home/amikelov/.mixcr/libraries/watsonlab_lib.d.fasta /usr/local/share/igblast/fasta/imgt_human_ig_d.fasta
+
+realpath *_collapse-unique.fastq | parallel -j 88 --line-buffer  'docker exec igb changeo-igblast -r /usr/local/share/germlines/imgt/human/vdj -s {} -n {} -p 3 -o /home/amikelov/paper_alleles/benchmarking/immcantation/downsampled/5race/igblast'
+```
+
+### Data without UMI
+
+#### Assemble pairs from downsampled data
+
+```{bash}
+
+realpath ~/paper_alleles/raw0/watson/downsampled/noumi/*_R1_*|parallel  -j 88  --line-buffer 'AssemblePairs.py align -1 {} -2 {= s:_R1_:_R2_: =} --coord sra --rc tail --outdir '~/paper_alleles/benchmarking/immcantation/downsampled/noumi/' --outname {= s:_R1::;s:.*\/:: =} --log AP.log'
+```
+
+#### Run IgBlast
+
+```{bash}
+realpath *_assemble-pass.fastq | parallel -j 68 --line-buffer  'docker exec igb changeo-igblast -r /usr/local/share/germlines/imgt/human/vdj -s {} -n {= s::: =} -p 3 -o /home/amikelov/paper_alleles/benchmarking/immcantation/downsampled/noumi/igblast'
+```
+
+## TIgGER inference
+
+```{r}
+
+germlineDb_watsonlab<-readIgFasta("/home/amikelov/paper_alleles/watsonlab_IGH_VRegion_padded.fasta")
+germlineDb_imgt<-readIgFasta("/home/amikelov/paper_alleles/imgt_human_IGHV.fasta")
+
+tigger_pipeline<-function(filenames,out_folder,germlineDb){
+  
+  tryCatch( {
+    
+    `%+%` <- function(a, b) paste0(a, b)
+    extract_id<- function(x) str_remove_all(x,".*/*.*/|\\.tsv")
+    id<-extract_id(filenames)
+    
+   benchm <- bench::mark(
+      {
+        tigger_db <- read_tsv(filenames,show_col_types = FALSE) |> 
+        mutate(v_call=str_remove(v_call,",.*"))
+    
+      print(filenames)
+    
+    novel_db <-suppressWarnings(
+      suppressMessages(findNovelAlleles(tigger_db,germline_db = germlineDb,nproc=10)))
+    
+    allele_db<-inferGenotype(tigger_db, germline_db = germlineDb, novel=novel_db) 
+
+    genotype<-genotypeFasta(allele_db,germline_db=germlineDb,novel=novel_db)
+    writeFasta(named_sequences = genotype,out_folder %+% str_replace(id,"_airr","") %+% ".tigger.fasta")
+    }
+    )
+    
+    allele_db<-allele_db%>%
+      mutate(countInAlleles=str_split(counts,",",simplify = F) %>% 
+               lapply(as.integer) %>% 
+               lapply(sum) %>% unlist(),
+             total=as.integer(total),
+             fractionInAlleles=countInAlleles/total)
+    
+    write_tsv(allele_db, out_folder %+% id %+% "_tigger.tsv")
+    return(benchm)
+  }, error= function(e) paste(filenames,e,sep=":" ) )
+}
+```
+
+```{r}
+bench<-lapply(dir("~/paper_alleles/benchmarking/immcantation/downsampled/5race",
+                  pattern="_db-pass.tsv",
+                  full.names = T),
+       tigger_pipeline,
+       "/home/amikelov/paper_alleles/benchmarking/immcantation/tigger/",
+       germlineDb = germlineDb_watsonlab)
+
+purrr::keep(bench
+
+```
+
+## iGenotyper - long-read based genotypes
+
+Read iGenotyper output - bed haplotypes
+
+```{r}
+
+#list donors with repseq
+donorsWithRepseq<- dir("~/paper_alleles/benchmarking/raw/repseq/",
+                       pattern="R1") %>%
+  str_remove("_R1.fastq") %>% 
+  str_remove(".*?_")
+
+
+
+#load iGenotyper derived haplotypes from .bed files
+igenotyper_haplotype<-
+  read_tsv(donorsWithRepseq %>%
+             sapply(function(don){
+               str_subset(dir("~/paper_alleles/benchmarking/igenotyper",
+                              full.names=T),
+                          don%+%".bed")}),
+           col_names = c('locus',
+                         "positionStart",
+                         'positionEnd',
+                         'geneName',
+                         'haplotype',
+                         'typeMatch',
+                         'allele',
+                         'nSeqInHaplotype'),
+                               id = "fileName") %>% 
+  filter(str_detect(geneName,"IGHV|IGHJ")) %>% 
+  mutate(donor=str_remove_all(fileName,".*\\/|.bed"),
+         geneName=factor(geneName)) %>%    # absolutely necessary to then filter out all of the genes  
+  select(geneName,donor,allele) %>% 
+  unique()
+```
+
+Assign sequences to haplotypes from iGenotyper
+
+```{r}
+igenotyper_seq<-igenotyper_haplotype %>% 
+  mutate(alleleName=case_when(
+    str_detect(allele,".*[0-9].*") ~ geneName %+%
+      "*" %+% sprintf("%02d", as.integer(allele)), #warnings for nov all-s, that's ok
+    str_detect(allele,"A|T|G|C") ~ "novel")
+    ) %>% 
+  left_join(iuis_ref,by="alleleName")  %>% 
+  mutate(alleleSeq=ifelse(alleleName=="novel",
+                          allele %>%  spgs::reverseComplement(case = "upper"), #iGenotyper gets novel alleles from reverse strand so need to RC
+                          alleleSeq),
+         inStartRef=alleleSeq %in% startingRef,            #whether sequence was in starting reference
+         alleleName=ifelse(alleleName=="novel",
+                           geneName %+% "*novel",
+                           alleleName),
+         geneType=case_when(
+           str_detect(geneName,"IGHV") ~ "V",
+           str_detect(geneName,"IGHD") ~ "D",
+           str_detect(geneName,"IGHJ") ~ "J",
+         )
+  ) %>%
+  select(-allele) 
+
+
+#Give unique names to novel alleles within each gene----
+alleleNames<-igenotyper_seq %>%
+  select(-donor) %>%
+  unique() %>%  
+  group_by(alleleName) %>% 
+  mutate(number=1:n(),
+         uniqAlleleName=ifelse(str_detect(alleleName,"novel"),
+                               paste(alleleName, number,sep="-"),alleleName)) %>% 
+  select(alleleName,uniqAlleleName,alleleSeq)
+
+
+##Assign uniq names, remove truncated genes ----
+igenotyper_seq %<>% 
+  #Assign unique novel allele names 
+  left_join(alleleNames,by=c("alleleName","alleleSeq")) %>% 
+  #remove obviously truncated V genes
+  filter(!(geneType=="V" & nchar(alleleSeq)<250)) %>%  
+  select(-alleleName) %>% dplyr::rename(alleleName=uniqAlleleName)
+
+```
+
+## Add to iGenotyper expression information from Rep-Seq
+
+### Write fasta files for processing with MiXCR
+
+```{r}
+#Need to filter out thrashy genes (stop-codons, no C in CDR3), for this purpose we write as fasta donor-specific reference libraries from iGenotyper haplotypes and run repseqio
+##Write fasta files for processing with MiXCR ----
+igenotyper_seq %>% 
+  mutate(alleleName=">" %+% alleleName %+% "\n" %+% alleleSeq) %>% 
+  group_by(donor,geneType) %>% 
+  group_walk( ~ write_tsv(.x %>% select(alleleName),
+                          "~/paper_alleles/benchmarking/igenotyper/mixcr/" %+%
+                            .y$donor %+% 
+                            "_iGenotyper." %+% 
+                            .y$geneType %+%
+                            ".fasta",
+                          col_names = F))
+```
+
+### Create MiXCR formatted library with command line tool `repseqio`
+
+```{bash}
+cd ~/paper_alleles/benchmarking/igenotyper/mixcr/
+
+ls *V*fasta|parallel 'repseqio -V alleles fromFasta -f --taxon-id 9606 --species-name hs --species-name homsap --species-name hsa --chain IGH --name-index 0 --gene-type V --gene-feature VRegion {} {.}.json'
+
+ls *J*fasta|parallel 'repseqio -V alleles fromFasta -f --taxon-id 9606 --species-name hs --species-name homsap --species-name hsa --chain IGH --name-index 0 --gene-type J --gene-feature JRegion {} {.}.json'
+
+
+```
+
+### Merge jsons for V D J C and infer Points
+
+```{bash}
+rm -r *mifdx
+
+ls *V*json |cut -f 1 -d "_" | parallel -j 10 --line-buffer 'echo {}; J=$(ls {}_*J.json); repseqio -V alleles  merge --replace-duplicate-genes -f  {}_*V.json /home/amikelov/ref/watson_hg38/watsonlab_lib.v.json /home/amikelov/ref/watson_hg38/watsonlab_lib.d.json $J /home/amikelov/ref/watson_hg38/watsonlab_lib.j.json /home/amikelov/paper_alleles/benchmarking/igenotyper/mixcr/watsonlab_lib.c.json {}_iGenotyper.json; repseqio  -V alleles  inferPoints -f -g VRegion -g JRegion  {}_iGenotyper.json {}_iGenotyper.json'
+```
+
+### Run debug and collect broken V and J genes
+
+```{bash}
+
+rm -r *mifdx
+
+ls *iGenotyper.json| parallel 'repseqio -V alleles debug  -p {}' |grep -A3 IGHV > debug.txt
+ls *iGenotyper.json| parallel 'repseqio -V alleles debug  -p {}' |grep -A3 IGHJ >> debug.txt
+
+paste <(grep IGHV debug.txt|sed 's/ .*//') <(cat debug.txt | grep -E "stop|start") |sort |uniq >debug.tsv
+
+#repseqio throws exception on  IGHV4-61*novel-3 and IGHJ1*novel-1 which are both extremely truncated iGenotyper hits. need to remove them manually
+# add to debug tsv  IGHV4-61*novel-3  IGHJ1*novel-1
+echo -e 'IGHV4-61*novel-3\tFR1 contains a stop codon' >> debug.tsv
+echo -e 'IGHJ1*novel-1\ttruncated' >> debug.tsv
+```
+
+### Remove all genes which didn't pass debug and write cleaned fasta
+
+```{r}
+
+igenotyper_seq %<>%
+  anti_join(read_tsv("~/paper_alleles/benchmarking/igenotyper/mixcr/debug.tsv",
+                     col_names = c("alleleName","problem")),
+            by="alleleName" )
+
+igenotyper_seq %>% 
+  mutate(alleleName=">" %+% alleleName %+% "\n" %+% alleleSeq) %>% 
+  group_by(donor,geneType) %>% 
+  group_walk( ~ write_tsv(.x %>% select(alleleName),
+                          "~/paper_alleles/benchmarking/igenotyper/mixcr/" %+% .y$donor %+% "_iGenotyper." %+% .y$geneType %+% ".fasta",
+                          col_names = F))
+```
+
+### Again create MiXCR formatted library on cleaned fasta
+
+```{bash}
+cd ~/paper_alleles/benchmarking/igenotyper/mixcr/
+
+rm *mifdx
+
+ls *V*fasta|parallel 'repseqio -V alleles fromFasta -f --taxon-id 9606 --species-name hs --species-name homsap --species-name hsa --chain IGH --name-index 0 --gene-type V --gene-feature VRegion {} {.}.json'
+
+ls *J*fasta|parallel 'repseqio -V alleles fromFasta -f --taxon-id 9606 --species-name hs --species-name homsap --species-name hsa --chain IGH --name-index 0 --gene-type J --gene-feature JRegion {} {.}.json'
+
+
+```
+
+### Merge jsons for V D J C and infer Points
+
+```{bash}
+rm *mifdx
+
+ls *V*json |cut -f 1 -d "_" | parallel -j 10 --line-buffer 'echo {}; J=$(ls {}_*J.json); repseqio -V alleles  merge --replace-duplicate-genes -f  {}_*V.json /home/amikelov/ref/watson_hg38/watsonlab_lib.v.json /home/amikelov/ref/watson_hg38/watsonlab_lib.d.json $J /home/amikelov/ref/watson_hg38/watsonlab_lib.j.json /home/amikelov/paper_alleles/benchmarking/igenotyper/mixcr/watsonlab_lib.c.json {}_iGenotyper.json; repseqio  -V alleles  inferPoints -f -g VRegion -g JRegion  {}_iGenotyper.json {}_iGenotyper.json'
+```
+
+### Run Mixcr upstream for benchmarking data, but on donor-specific references from long-reads based genotypes (cleaned from non-functional alleles)
+
+```{bash}
+
+# 5'RACE
+parallel --line-buffer  -j 4 'id=$(ls ../../raw/repseq/{}*R1* | cut -f 1-2 -d "_"|sed "s/.*\\///"); donor=$(echo $id|cut -d "_" -f 2);echo $id;echo $donor; mixcr -Xmx22g -V alleles analyze generic-bcr-amplicon-umi  -f --species hs --library ${donor}_iGenotyper --rna --rigid-left-alignment-boundary --floating-right-alignment-boundary C --tag-pattern "^(R1:*) \ ^(UMI:N{"12"})GTACG{1:10}(R2:*)"   --assemble-clonotypes-by VDJRegion --split-clones-by C ../../raw/repseq/${id}_{{R}}.fastq  $id' ::: SRR23446568 SRR23446580 SRR23446567 SRR23446566 SRR23446585 SRR23446587 SRR23446564 SRR23446565 SRR23446588 SRR23446578 SRR23446563 SRR23446579 SRR23446569 SRR23446577 SRR23446571 SRR23446582 SRR23446576 SRR23446572 SRR23446573 SRR23446583 SRR23446574 SRR23446584 SRR23446589 SRR23446586 SRR23446581 SRR23446590 SRR23446575
+
+# Leader multiplex
+parallel --line-buffer  -j 4 'id=$(ls ../../raw/repseq/{}*R1* | cut -f 1-2 -d "_"|sed "s/.*\\///"); donor=$(echo $id|cut -d "_" -f 2);echo $id;echo $donor; mixcr -Xmx22g -V alleles analyze generic-bcr-amplicon  -f -Massemble.cloneAssemblerParameters.badQualityThreshold=-1 --species hs --library ${donor}_iGenotyper --rna --rigid-left-alignment-boundary --floating-right-alignment-boundary C --assemble-clonotypes-by VDJRegion --split-clones-by C ../../raw/repseq/${id}_{{R}}.fastq  $id' ::: SRR23654543 SRR23654534 SRR23654549 SRR23654586 SRR23654539 SRR23654573 SRR23654545 SRR23654542 SRR23654584 SRR23654561 SRR23654546 SRR23654560 SRR23654548 SRR23654577 SRR23654587 SRR23654583 SRR23654575 SRR23654552 SRR23654541 SRR23654582 SRR23654562 SRR23654553 SRR23654551 SRR23654558 SRR23654537 SRR23654557 SRR23654588 SRR23654576 SRR23654536 SRR23654563 SRR23654559 SRR23654550 SRR23654544 SRR23654533 SRR23654554 SRR23654547 SRR23654556 SRR23654565 SRR23654585 SRR23654535 SRR23654574 SRR23654555 SRR23654572 SRR23654540 SRR23654538
+
+
+ls /home/amikelov/paper_alleles/benchmarking/raw/repseq/noumi/*R1.fastq | \
+    cut -f 1-3 -d "_"| \
+    parallel -S 3/bober0.milaboratories.com -S 3/bober1.milaboratories.com \
+    -S 3/bober2.milaboratories.com \
+    -S 3/candibober0.milaboratories.com \
+    --line-buffer  \
+    'cd /home/amikelov/paper_alleles/benchmarking/igenotyper/mixcr;
+     donor=$(echo {} |grep -E -o  "W-[0-9]{1,3}");
+    echo {}; echo $donor;
+    /software/mixcr/mixcr -Xmx22g analyze generic-bcr-amplicon \
+    -Massemble.cloneAssemblerParameters.badQualityThreshold=1 \
+    -Massemble.cloneAssemblerParameters.minimalQuality=1 \
+    -Malign.parameters.vParameters.parameters.maxHits=4 \
+    --species hs --rna  \
+    --library ${donor}_iGenotyper \
+    --rigid-left-alignment-boundary \
+    --floating-right-alignment-boundary C \
+    --assemble-clonotypes-by "{FR1Begin(+6):FR4End}" \
+    --split-clones-by C {}*_R1.fastq {}*_R2.fastq \
+    {= s:.*/:: =}'
+
+
+ls  /home/amikelov/paper_alleles/benchmarking/raw/repseq/5race/*R1*.fastq | parallel \
+    --line-buffer \
+    -S 3/bober0.milaboratories.com -S 3/bober1.milaboratories.com \
+    -S 3/bober2.milaboratories.com \
+    -S 3/candibober0.milaboratories.com \
+    'cd /home/amikelov/paper_alleles/benchmarking/igenotyper/mixcr;
+     donor=$(echo {} |grep -E -o  "S?[WC]-[0-9]{1,3}");
+    echo {}; echo $donor;
+    /software/mixcr/mixcr -Xmx22g analyze generic-bcr-amplicon-umi -f \
+    --species hs --rna \
+    --rigid-left-alignment-boundary \
+    --floating-right-alignment-boundary C \
+    --library ${donor}_iGenotyper \
+    --tag-pattern "^(R1:*) \ ^(UMI:N{"12"})GTACG{1:10}(R2:*)"   \
+    --assemble-clonotypes-by VDJRegion \
+    --split-clones-by C \
+    -Malign.parameters.vParameters.parameters.maxHits=4 \
+    {} {= s:_R1:_R2: =} \
+    {= s:.*/::;s:_R1.fastq:: =}'
+
+
+
+
+
+
+
+```
+
+### Read MiXCR upstream output on donor-specific references from long-reads based genotypes
+
+```{r}
+
+clonesets_igenotyper_files<-dir("/home/amikelov/paper_alleles/benchmarking/igenotyper/mixcr",
+                                pattern="clones_IGH.tsv",
+                                full.names = T)
+
+#clonesets_igenotyper because reference is from iGenotyper
+
+clonesets_igenotyper<-lapply(clonesets_igenotyper_files, function(fl){
+  read_tsv(fl,id= "fileName") %>% 
+    select(-starts_with("minQual"),-(allCAlignments:aaSeqFR4))
+}) %>% bind_rows() %>% 
+   mutate(donor=str_extract(fileName,"(SC|W)-[0-9]{1,3}"))
+
+#extract mutations and donor labels
+clonesets_igenotyper%<>% 
+  mutate(vMut=str_split_i(allVAlignments,"\\|",i=6),
+         jMut=str_split_i(allJAlignments,"\\|",i=6),
+         donor=str_remove(donor,".*_"),
+  )
+```
+
+### 
+
+### Collect statistics for each V- and J-allele on \# clonotypes and \# naives
+
+```{r}
+#NOTE: I select all genes with the best alignment scores for a clone
+geneStats<-clonesets_igenotyper %>% 
+# select ALL best V hits and pick ones with max score.
+# total # rows will be increased due to presence of very similar genes but that's ok cause these stats are only used to filter out non-expressed alleles and non-reliable allele calls 
+  separate_rows(allVHitsWithScore,sep=",") %>%
+  separate(allVHitsWithScore,
+           into=c("vHit","score"),
+           sep="\\(") %>% 
+  mutate(score=as.numeric(str_remove(score,"\\)")),
+         vGene=str_remove(vHit,"\\*.*")) %>% 
+  group_by(fileName,cloneId) %>%
+  mutate(maxScore=max(score),.after=score) %>% 
+  filter(score==maxScore) %>% 
+  ungroup() %>%  
+#calculate nClones and nNaives for each allele  
+  group_by(donor,vGene,vHit) %>% 
+  summarize(nClonesInAllele=n(),
+         nNaive=sum(vMut==""&jMut==""),
+         cloneIds=list(cloneId)) %>% 
+  ungroup() %>%
+#calculate allele disbalance within each gene
+  group_by(donor,vGene) %>%
+  mutate(geneTotalClones= cloneIds%>% unlist() %>% unique() %>% length() ,
+         alleleFreqInGene=nClonesInAllele/geneTotalClones
+         ) %>%
+  ungroup() %>%
+  group_by(donor) %>% 
+  mutate(vGeneFreq=geneTotalClones/sum(geneTotalClones)) %>% 
+  ungroup() %>% 
+  dplyr::rename(alleleName=vHit)
+
+##Collect # clones and # naive clones for J genes ----
+geneStats<-
+  bind_rows(geneStats,
+            clonesets_igenotyper %>% 
+              separate_rows(allJHitsWithScore,sep=",") %>%
+              separate(allJHitsWithScore,
+                       into=c("jHit","score"),
+                       sep="\\(") %>% 
+              mutate(score=as.numeric(str_remove(score,"\\)"))) %>% 
+              group_by(fileName,cloneId) %>%
+              mutate(maxScore=max(score),.after=score) %>% 
+              filter(score==maxScore) %>% 
+              ungroup() %>%
+              group_by(donor,jHit) %>% 
+              summarise(nClonesInAllele=n(),
+                        nNaive=sum(vMut==""&jMut==""))%>% 
+              dplyr::rename(alleleName=jHit)
+  )
+
+#add it to iGenotyper sequences table
+igenotyper_seq %<>%
+  left_join(geneStats,by=c("donor","alleleName")) %>%
+  replace_na(list(nClonesInAllele=0,nNaive=0)) 
+```
+
+## Stats TIgGER
+
+```{r}
+tiggerStats<-
+  dir("~/paper_alleles/benchmarking/immcantation",
+    pattern = "_db-pass.tsv",
+    full.names = T) %>% 
+  c(dir("~/paper_alleles/benchmarking/immcantation/downsampled",
+    pattern = "_db-pass.tsv",
+    full.names = T)) %>% 
+  lapply(function(flnm){
+    db<-read_tsv(flnm) %>% 
+      mutate(CDR3Begin=str_locate(sequence_alignment,junction)[,1],
+             CDR3VPartLen=v_germline_end-CDR3Begin) %>% 
+      separate_rows(v_call,sep=",") %>% 
+      mutate(geneName=str_remove(v_call,"\\*.*")) %>% group_by(geneName) %>%
+      summarise(trimSeqBy=max(CDR3VPartLen),
+                nClones=n()) %>%
+      mutate(fileName=flnm,
+             donor=str_extract(flnm,"(SC|W)-[0-9]{1,3}"),
+             depth=str_extract(flnm,"10K|50K|100K|500K"))
+  }) %>% bind_rows() %>% 
+  replace_na(list(depth="full")) %>% 
+  complete(depth,nesting(donor,geneName),fill = list(nClones=0)) %>% 
+  mutate(tool='tigger',
+         trimSeqBy=ifelse(trimSeqBy<0,0,trimSeqBy)) 
+
+write_tsv(tiggerStats,"~/paper_alleles/benchmarking/tiggerClonesetStatsByV.tsv")
+
+
+```
+
+## Stats MiXCR
+
+```{r}
+mixcrStats<-
+  c(dir("~/paper_alleles/benchmarking/mixcr",
+    pattern = ".clones_IGH.tsv",
+    full.names = T),
+  dir("~/paper_alleles/benchmarking/mixcr_downsampled",
+    pattern = ".clones_IGH.tsv",
+    full.names = T)) %>%  
+  lapply(function(flnm){
+    db<-read_tsv(flnm) %>% 
+      separate_rows(allVHitsWithScore,sep=",") %>% 
+      mutate(geneName=str_remove(allVHitsWithScore,"\\*.*")) %>% group_by(geneName) %>%
+      summarise(nClones=n()) %>%
+      mutate(fileName=flnm,
+             donor=str_extract(flnm,"(SC|W)-[0-9]{1,3}"),
+             depth=str_extract(flnm,"10K|50K|100K|500K"))
+  }) %>% bind_rows() %>% 
+  replace_na(list(depth="full")) %>% 
+  complete(depth,nesting(donor,geneName),fill = list(nClones=0)) %>% 
+  mutate(tool='mixcr') 
+
+write_tsv(mixcrStats,"~/paper_alleles/benchmarking/mixcrClonesetStatsByV.tsv")
+```
+
+## Read in MIXCR [reports]{.underline} stats on clonesets
+
+```{r}
+stats<- read_tsv("~/paper_alleles/benchmarking/mixcr_stats.tsv") %>% 
+  mutate(donor = str_extract(fileName,"(SC|W)-[0-9]{1,3}"))
+```
+
+## Read in MiXCR-generated statistics on allele calling
+
+```{r}
+# Read in tsv output of MiXCR findAlleles  ----
+mixcr_allele_files<-c(dir("~/paper_alleles/benchmarking/mixcr",
+                        pattern = "[noumi|5race].tsv",
+                        full.names = T),
+                      dir("~/paper_alleles/benchmarking/mixcr_downsampled",
+                        pattern = "[noumi|5race].tsv",
+                        full.names = T))
+
+alleles_mixcr<-read_tsv(mixcr_allele_files,id="fileName") %>% 
+  filter(str_detect(geneName,"IGHV|IGHJ")) %>% 
+  mutate(donor = str_extract(fileName,"(SC|W)-[0-9]{1,3}"),
+         depth = str_extract(fileName,"10K|50K|100K|500K"),
+         depth=ifelse(is.na(depth),"full",depth),
+         protocol = str_extract(fileName,"noumi|5race"),
+         tool="mixcr",
+         trimSeqBy=str_remove_all(reliableRegion,"VRegion\\(.,-|\\)|.*\\(|\\}") %>% as.integer())
+```
+
+## Read in allele sequences from comparison tools
+
+```{r}
+fastaFromMixcr<-c(dir("~/paper_alleles/benchmarking/mixcr",
+                    pattern="mixcr.fasta",
+                    full.names = T),
+   dir("~/paper_alleles/benchmarking/mixcr_downsampled",
+       pattern="mixcr.fasta",
+       full.names = T))
+  # dir("~/paper_alleles/benchmarking/mixcr/noumi/downsampled",
+  #   pattern="mixcr.fasta",
+  #   full.names = T))
+  
+  
+fastaFromTigger<-c(
+  dir("~/paper_alleles/benchmarking/immcantation/tigger",
+      pattern = "tigger.fasta",
+      full.names=T),
+ dir("~/paper_alleles/benchmarking/immcantation/tigger/downsampled",
+     pattern = "tigger.fasta",
+    full.names=T))
+
+
+alleleFastas<-c(fastaFromMixcr,
+                fastaFromTigger)
+
+# read in all fasta files
+all_alleles<-lapply(alleleFastas,function(fasta){
+  donorAlleleSeq<-readDNAStringSet(fasta)  
+  donorAlleleSeq <- tibble(alleleName=names(donorAlleleSeq) %>%
+                             str_remove("\\|.*"),
+                           alleleSeq=as.character(donorAlleleSeq) %>% 
+                             str_remove_all("\\."),
+                           id = str_remove_all(fasta,".*/|.fasta|_db-pass"),
+                           donor = str_extract(id, "(SC|W)-[0-9]{1,3}") %>%
+                             str_remove("_.*"),
+                           tool=str_remove(id,".*\\."),
+                           depth=str_extract(fasta,"10K|50K|100K|500K"))%>%           
+    mutate(depth=ifelse(is.na(depth),"full",depth)) %>% 
+    dplyr::filter(str_detect(alleleName,"IGHV|IGHJ")) %>% 
+    mutate(geneName=str_remove(alleleName,"\\*.*")) %>% 
+    relocate(id:geneName, .before=alleleName) %>% 
+    unique()
+})
+
+all_alleles<-all_alleles[sapply(all_alleles,nrow)!=0] %>% 
+  bind_rows()  %>%  #add info on protocol and CDR3 reliable border
+  left_join(
+    alleles_mixcr %>%
+      select(donor, 
+             depth,
+             tool,
+             alleleName,
+             trimSeqBy),
+    by=c("donor","depth","tool","alleleName")) %>% 
+  left_join(
+    tiggerStats %>%
+      select(donor, 
+             depth,
+             tool,
+             geneName,
+             trimSeqBy),
+     by=c("donor","depth","tool","geneName")
+) %>%
+  rename(trimSeqBy=trimSeqBy.x) %>% 
+  mutate(trimSeqBy=ifelse(is.na(trimSeqBy) & tool=="tigger",trimSeqBy.y,trimSeqBy)) %>% 
+  left_join(read_tsv("~/paper_alleles/benchmarking/raw/repseq_meta.tsv") %>% 
+            select(donor,protocol),
+            by="donor")
+  
+```
+
+## Define genes which were not catched in long-reads
+
+```{r}
+##Filter out those genes, that are not present in iGenotyper output (not covered by longReads,not expressed, thrashy calls)----
+notCatchedGenesInPullDown<-igenotyper_seq %>%
+  dplyr::count(geneName,donor) %>% 
+  mutate(geneName=factor(geneName,levels=alleles_mixcr %>% select(geneName) %>% pull(geneName) %>% unique())) %>% 
+  na.omit() %>% 
+  ungroup() %>% 
+  complete(geneName,donor,fill = list(n=0) ) %>% 
+  filter(n==0) %>% select(geneName,donor)
+
+```
+
+## Compare alleles by sequence
+
+```{r}
+tools_depths<-all_alleles %>% 
+  select(donor,tool,depth) %>% unique()
+
+compareJs<-F
+
+alleleComparison<-
+  apply(tools_depths, 1, function(tldpt){
+    regex_full_join(
+      
+      igenotyper_seq %>%
+                      filter(donor == tldpt["donor"]) %>% 
+                      filter(!str_detect(alleleName,"IGHJ")|compareJs),
+      
+      all_alleles %>%
+                      filter(donor == tldpt["donor"],
+                             tool == tldpt["tool"],
+                             depth == tldpt["depth"]) %>%
+                      filter(!str_detect(alleleName,"IGHJ")|compareJs) %>% 
+                      mutate(alleleSeq=ifelse(is.na(trimSeqBy),
+                                              alleleSeq,
+                                              str_sub(alleleSeq,1,-trimSeqBy-1)),
+                             alleleSeq=ifelse(protocol=="noumi",
+                                              str_sub(alleleSeq,20),
+                                              alleleSeq)),
+      by =c ("alleleSeq","donor")) %>%  
+      replace_na(list(donor.y = tldpt["donor"],
+                      tool = tldpt["tool"],
+                      depth = tldpt["depth"]))
+  }) %>% bind_rows() %>% 
+  mutate(geneName=ifelse(is.na(geneName.y),geneName.x,geneName.y),.before=alleleSeq.x) %>% 
+  ungroup() %>%
+  dplyr::rename(
+    donor=donor.y,
+    alleleName.iGenotyper=alleleName.x,
+    alleleSeq.iGenotyper=alleleSeq.x,
+    alleleName.tool=alleleName.y,
+    alleleSeq.tool=alleleSeq.y) %>% 
+  select(-geneName.x,-geneName.y,-donor.x,-protocol)
+
+alleleComparison_bckp<-alleleComparison
+
+
+#Add information from clonsetsfindAlleles for each gene/donor
+alleleComparison %<>% 
+  left_join(alleles_mixcr %>%
+             # filter(depth=="full") %>%
+              select(geneName,
+                     depth,
+                     donor,
+                     status,
+                     enoughInfo) %>%
+              unique(),
+            by= c("donor",
+                  "depth",
+                  "geneName")) %>%
+  left_join(
+    bind_rows(
+      mixcrStats,
+      tiggerStats
+    ) %>%
+      select(-fileName,-trimSeqBy) %>% 
+      rename(nClonesTotalInGene=nClones),
+    by=c('donor','depth','tool','geneName')
+  ) %>% 
+  mutate(inStartRef=ifelse(is.na(inStartRef),alleleName.tool %in% names(startingRef),inStartRef)) %>%
+  relocate(tool,donor,geneType,geneName,
+           alleleName.iGenotyper,alleleName.tool,
+           id,depth,inStartRef,nClonesInAllele,nNaive,
+           alleleSeq.iGenotyper,alleleSeq.tool,
+           nClonesTotalInGene) %>%
+  #add info on protocol
+  left_join(read_tsv("~/paper_alleles/benchmarking/raw/repseq_meta.tsv") %>% 
+              select(donor,protocol),
+            by="donor")
+
+
+
+
+# FP = is.na(alleleName.iGenotyper)
+# FN = is.na(alleleName.tool)
+
+alleleComparison %<>%
+  left_join(notCatchedGenesInPullDown %>% mutate(geneNotCatchedInPacBio=TRUE),
+            by=c("geneName","donor")) %>% 
+  replace_na(list(geneNotCatchedInPacBio=FALSE)) %>% 
+  mutate(matchStatus=
+           case_when(
+             nClonesInAllele<=10 ~ "lowExpression",
+             nNaive<=2 ~ "noSuchNaiveExpress",
+             is.na(alleleName.iGenotyper) & geneNotCatchedInPacBio ~ "geneNotCatchedInPacBio",
+             tool=="mixcr" & enoughInfo == F & (status == "COULD_NOT_BE_ALIGNED_ON_KNOWN_VARIANT" | status == "NO_CLONES_TO_SEARCH") ~ "notEnoughInfo",
+             tool=="tigger" & nClonesTotalInGene<50 & inStartRef=="FALSE" ~ "notEnoughInfo",
+            # nClonesTotalInGene<50  ~ "tooFewClonesInRepseqNotEnoughInfo",
+            !is.na(alleleName.tool) & !is.na(alleleName.iGenotyper) ~ "match",
+             is.na(alleleName.iGenotyper) ~ "falsePositive",
+             is.na(alleleName.tool) ~ "falseNegative"
+           ))  %>% 
+  #join MiXCR stats and filter out shallow sample (<500K reads)
+  left_join(stats %>% select(donor,totalReads),by="donor") %>%
+  filter(totalReads>500000)
+```
+
+### Genes not catched in PacBio but alleles matched to other genes
+
+```{r}
+fpSeq<-alleleComparison %>% 
+  filter(tool=="mixcr",
+         matchStatus=="falsePositive",
+         depth=='full') %>% 
+  select(alleleSeq.tool,alleleName.tool,donor)
+
+notCatchedPBAllelesToDifGenes<-alleleComparison %>%
+  filter(depth=='full') %>% 
+  mutate(geneName.iGenotyper=str_remove(alleleName.iGenotyper,"\\*.*"),
+         geneName.tool=str_remove(alleleName.tool,"\\*.*")) %>%
+  regex_inner_join(fpSeq,by = join_by(alleleSeq.iGenotyper==alleleSeq.tool)) %>%
+  filter(geneName.iGenotyper!=geneName.tool) %>% 
+  select(geneName.iGenotyper,geneName.tool,donor.y) %>% 
+  unique() %>% 
+  rename(donor=donor.y,geneName=geneName.iGenotyper) %>%
+  inner_join(notCatchedGenesInPullDown,by=c("donor","geneName")) %>% 
+  select(-geneName) %>% 
+  unique() %>% 
+  mutate(alleleMatchedToOtherGene=TRUE)
+
+alleleComparison %<>%
+  left_join(notCatchedPBAllelesToDifGenes %>%
+              mutate(alleleMatchedToOtherGene=TRUE), 
+            by= join_by(donor == donor , geneName==geneName.tool)) %>% 
+  replace_na(list(alleleMatchedToOtherGene=F)) %>% 
+  mutate(matchStatus=ifelse(alleleMatchedToOtherGene,
+                            "geneNotCatchedInPacBio",
+                            matchStatus))
+
+```
+
+## Comparison NOT divided by presence/absence in starting reference library
+
+```{r}
+comparisonStats<-
+    alleleComparison %>%
+   filter(depth=="full") %>%
+  ungroup() %>% 
+  group_by(donor,depth,tool,matchStatus) %>% 
+  # n_disctinct because some of the tools' findings match to multiple genes, while may be the same in sequence
+  summarise(N=n_distinct(alleleSeq.tool,alleleName.iGenotyper)) %>% 
+  ungroup() %>% 
+  complete(matchStatus,depth,nesting(donor,tool),fill=list(N=0)) %>% 
+  group_by(donor,tool) %>% 
+  mutate(nAllelesTotal=sum(N[matchStatus=="match" | matchStatus== "falseNegative"])) %>% 
+  mutate(fraction=N/nAllelesTotal) %>% 
+  left_join(stats %>% select(donor,totalReads:readsUsedInClonotypes)) 
+
+
+# Fraction matched
+
+give.n <- function(y){
+  return(data.frame(
+    y = -0.07,
+    label = paste0('N=', length(y)))) 
+} 
+
+give.median <- function(y){
+  return(data.frame(
+    y = -0.14,
+    label =  paste0('med=', round(median(y),2)))) 
+}
+
+fig1a<-comparisonStats  %>% 
+  filter(
+    totalClonotypes>3000,
+    matchStatus %in% c("match")) %>%   #,"tooFewClonesInRepseqNotEnoughInfo")) %>% 
+  mutate(matchStatus=factor(matchStatus,levels=c("falseNegative","match","falsePositive"))) %>% 
+  ggplot(aes(y=fraction,x=tool,fill=tool))+
+  geom_boxplot(outlier.shape = NA)+
+  facet_grid( ~ matchStatus,
+              labeller = labeller(inStartRef=
+                                    c(`FALSE`="Absent in starting reference library",
+                                      `TRUE`="Present in starting reference library"),
+                                  matchStatus=c(match="Alleles supported\nby long reads",
+                                                falseNegative="Alleles missed",
+                                                falsePositive="Alleles not supported\nby long reads"))
+  )+
+  geom_point(position = position_dodge(width=0.75))+
+  theme_bw()+
+  scale_fill_manual(values = mi_dark,labels=c("MiXCR","TIgGER"))+
+  labs(y="Fraction of detected alleles",
+       x="Genotyping tool",
+       fill="Genotyping\ntool")+
+  stat_summary(fun.data = give.n, geom = "text",size=3)+
+  stat_summary(fun.data = give.median, geom = "text",size=3)+
+  scale_x_discrete(labels=c("MiXCR","TIgGER"))+
+  theme(legend.position = "none",
+        strip.background = element_rect(fill="white"),
+        axis.title.x =element_blank()
+        )
+
+
+
+# N False-positives
+
+
+give.n <- function(y){
+  return(data.frame(
+    y = -1,
+    label = paste0('N=', length(y)))) 
+} 
+
+give.median <- function(y){
+  return(data.frame(
+    y = -2.2,
+    label =  paste0('med=', round(median(y),2)))) 
+}
+
+fig1b<-comparisonStats  %>% 
+  filter(
+    totalClonotypes>3000,
+    matchStatus %in% c("falsePositive")) %>%   #,"tooFewClonesInRepseqNotEnoughInfo")) %>% 
+  mutate(matchStatus=factor(matchStatus,levels=c("falseNegative","match","falsePositive"))) %>% 
+  ggplot(aes(y=N,x=tool,fill=tool))+
+  geom_boxplot(outlier.shape = NA)+
+  facet_grid( ~ matchStatus,
+              labeller = labeller(inStartRef=
+                                    c(`FALSE`="Absent in starting reference library",
+                                      `TRUE`="Present in starting reference library"),
+                                  matchStatus=c(match="Alleles supported\nby long reads",
+                                                falseNegative="Alleles missed",
+                                                falsePositive="Alleles not supported\nby long reads"))
+  )+
+  geom_point(position = position_dodge(width=0.75))+
+  theme_bw()+
+  scale_fill_manual(values = mi_dark,labels=c("MiXCR","TIgGER"))+
+  labs(y="# potential false positive calls",
+       x="Genotyping tool",
+       fill="Genotyping\ntool")+
+  stat_summary(fun.data = give.n, geom = "text",size=3)+
+  stat_summary(fun.data = give.median, geom = "text",size=3)+
+  scale_x_discrete(labels=c("MiXCR","TIgGER"))+
+  theme(legend.position = "none",
+        strip.background = element_rect(fill="white"),
+        axis.title.x=element_blank())
+
+
+
+```
+
+## 
+
+## Comparison divided by presence/absence in starting reference library
+
+```{r}
+comparisonStats<-
+  alleleComparison %>%
+    filter(depth=="full") %>%
+  ungroup() %>% 
+  group_by(donor,inStartRef,tool,matchStatus) %>% 
+  # n_disctinct because some of the tools' findings match to multiple genes, while may be the same in sequence
+  summarise(N=n_distinct(alleleSeq.tool,alleleName.iGenotyper)) %>% 
+  ungroup() %>% 
+  complete(inStartRef,matchStatus,nesting(donor,tool),fill=list(N=0)) %>% 
+  group_by(donor,tool) %>% 
+  mutate(nAllelesTotal=sum(N[matchStatus=="match" | matchStatus== "falseNegative"])) %>% 
+  mutate(fraction=N/nAllelesTotal)
+
+
+#Comparison divided by presence/absence in starting reference library ----
+
+give.n <- function(y){
+  return(data.frame(
+    y = -0.03,
+    label = paste0('N=', length(y)))) 
+}
+
+give.median <- function(y){
+  return(data.frame(
+    y = -0.06,
+    label =  paste0('median=', round(median(y),2)))) 
+}
+
+fig1c<-  comparisonStats  %>% 
+    left_join(stats %>% select(donor,totalReads:readsUsedInClonotypes)) %>% 
+    filter(
+      totalClonotypes>3000,
+      matchStatus %in% c("falseNegative")) %>% 
+    mutate(matchStatus=factor(matchStatus,levels=c("falseNegative","match","falsePositive"))) %>% 
+    ggplot(aes(y=fraction,x=tool,fill=tool))+
+    geom_boxplot(outlier.shape = NA)+
+    facet_grid( ~ inStartRef,
+               labeller = labeller(inStartRef=c(`FALSE`="Absent in starting\nreference library",
+                                                `TRUE`="Present in starting\nreference library"),
+                                   matchStatus=c(match="Alleles supported by long reads",
+                                                 falseNegative="Alleles missed",
+                                                 falsePositive="Alleles not supported by long reads"))
+               )+
+    geom_point(aes(group=inStartRef),position = position_dodge(width=0.75))+
+    theme_bw()+
+    scale_fill_manual(values = mi_dark,labels=c("MiXCR","TIgGER"))+
+    labs(y="Fraction of missed alleles",
+         x="Genotyping tool",
+         fill="Genotyping\ntool")+
+    stat_summary(fun.data = give.n, geom = "text",size=3)+
+    stat_summary(fun.data = give.median, geom = "text",size=3) +
+    scale_x_discrete(labels=c("MiXCR","TIgGER"))+
+  theme(legend.position = "none",
+        strip.background = element_rect(fill="white"),
+        axis.title.x=element_blank())
+```
+
+## Downsampling effects
+
+```{r}
+comparisonStats<-
+  alleleComparison %>%
+   ungroup() %>% 
+  group_by(depth,donor,tool,matchStatus) %>% 
+  summarise(N=n_distinct(alleleSeq.tool,alleleName.iGenotyper)) %>% 
+  ungroup() %>% 
+  mutate(
+    donor= factor(donor,levels= unique(donor)),
+    depth=factor(depth,levels=c("full", "500K","100K","50K","10K")),
+    tool=factor(tool,levels=c('mixcr','tigger'))
+  ) %>% 
+  complete(matchStatus,depth,donor,tool,fill=list(N=0)) %>% 
+  group_by(donor,tool,depth) %>% 
+  mutate(nAllelesTotal=sum(N[matchStatus=="match" | matchStatus== "falseNegative"])) %>% 
+  mutate(fraction=N/nAllelesTotal) %>% 
+  left_join(stats %>% select(donor,totalReads:readsUsedInClonotypes)) %>%
+    left_join(read_tsv("~/paper_alleles/benchmarking/raw/repseq_meta.tsv") %>% 
+              select(donor,protocol),
+            by="donor") %>% 
+  replace_na(list(fraction=0))
+
+give.n <- function(y){
+  return(data.frame(
+    y = -0.05,
+    label = paste0('N=', length(y)))) 
+}
+give.median <- function(y){
+  return(data.frame(
+    y = -0.13,
+    label =  paste0('med=', round(median(y),2)))) 
+}
+
+fig1d<-comparisonStats  %>% 
+  filter(
+    totalClonotypes>3000,
+    matchStatus %in% c("match")) %>% 
+  mutate(matchStatus=factor(matchStatus,levels=c("falseNegative","match","falsePositive")),
+         depth=factor(depth,levels=c("full", "500K","100K","50K","10K"))) %>% 
+  ggplot(aes(y=fraction,x=depth,fill=tool))+
+  geom_boxplot(outlier.shape = NA,position = position_dodge2(preserve = "single"))+
+  facet_wrap(  ~ matchStatus,
+               labeller = labeller(inStartRef=c(`FALSE`="Absent in starting reference library",
+                                                `TRUE`="Present in starting reference library"),
+                                   matchStatus=c(match="Alleles supported by long reads",
+                                                 falseNegative="Alleles missed",
+                                                 falsePositive="Alleles not supported by long reads")),
+               nrow=2
+  )+
+  geom_point(position = position_dodge(0.75, preserve = 'total'))+
+  theme_bw()+
+  scale_fill_manual(values = mi_dark,labels=c("MiXCR","TIgGER"))+
+  labs(y="Fraction of detected alleles",
+       x="",
+       fill="Genotyping tool") +
+  theme(legend.position = "top",
+        strip.background = element_rect(fill="white"))+
+  stat_summary(fun.data = give.n, geom = "text",size=3,position =position_dodge(0.75, preserve = 'total') )+
+  stat_summary(fun.data = give.median, geom = "text",size=3,position =position_dodge(0.75, preserve = 'total'))
+
+
+give.n <- function(y){
+  return(data.frame(
+    y = -1,
+    label = paste0('N=', length(y)))) 
+}
+give.median <- function(y){
+  return(data.frame(
+    y = -2,
+    label =  paste0('med=', round(median(y),2)))) 
+}
+
+
+fig1e<-comparisonStats  %>% 
+  filter(
+    totalClonotypes>3000,
+    matchStatus %in% c("falsePositive")) %>% 
+  mutate(matchStatus=factor(matchStatus,levels=c("falseNegative","match","falsePositive")),
+         depth=factor(depth,levels=c("full", "500K","100K","50K","10K"))) %>% 
+  ggplot(aes(y=N,x=depth,fill=tool))+
+  geom_boxplot(outlier.shape = NA,position = position_dodge2(preserve = "single"))+
+  facet_wrap(  ~ matchStatus,
+               labeller = labeller(inStartRef=c(`FALSE`="Absent in starting reference library",
+                                                `TRUE`="Present in starting reference library"),
+                                   matchStatus=c(match="Alleles supported by long reads",
+                                                 falseNegative="Alleles missed",
+                                                 falsePositive="Alleles not supported by long reads")),
+               nrow=2
+  )+
+ # geom_point(position = position_dodge(0.75, preserve = 'total'))+
+  ggbeeswarm::geom_quasirandom(dodge.width=.8)+
+  theme_bw()+
+  scale_fill_manual(values = mi_dark,labels=c("MiXCR","TIgGER"))+
+  labs(y="# potential false positive calls",
+       x="Downsampling depth",
+       fill="Genotyping tool") +
+  theme(legend.position = "none",
+        strip.background = element_rect(fill="white"))+
+  stat_summary(fun.data = give.n, geom = "text",size=3,position =position_dodge(0.75, preserve = 'total') )+
+  stat_summary(fun.data = give.median, geom = "text",size=3,position =position_dodge(0.75, preserve = 'total'))
+
+
+
+
+
+# comparisonStats<-
+#   alleleComparison %>%
+#    ungroup() %>% 
+#   group_by(depth,donor,tool,matchStatus) %>% 
+#   summarise(N=n_distinct(alleleSeq.tool,alleleName.iGenotyper)) %>% 
+#   ungroup() %>% 
+#   mutate(
+#     donor= factor(donor,levels= unique(donor)),
+#     depth=factor(depth,levels=c("full", "500K","100K","50K","10K")),
+#     tool=factor(tool,levels=c('mixcr','tigger'))
+#   ) %>% 
+#   complete(matchStatus,depth,donor,tool,fill=list(N=0)) %>% 
+#   group_by(donor,tool,depth) %>% 
+#   mutate(nAllelesTotal=sum(N[matchStatus=="match" | matchStatus== "falseNegative" | matchStatus== "notEnoughInfo" ])) %>% 
+#   mutate(fraction=N/nAllelesTotal) %>% 
+#   left_join(stats %>% select(donor,totalReads:readsUsedInClonotypes)) %>%
+#     left_join(read_tsv("~/paper_alleles/benchmarking/raw/repseq_meta.tsv") %>% 
+#               select(donor,protocol),
+#             by="donor") %>% 
+#   replace_na(list(fraction=0))
+# 
+# 
+# 
+# give.n <- function(y){
+#   return(data.frame(
+#     y = -0.02,
+#     label = paste0('N=', length(y)))) 
+# }
+# give.median <- function(y){
+#   return(data.frame(
+#     y = -0.09,
+#     label =  paste0('med=', round(median(y),2)))) 
+# }
+# 
+# fig1f<-comparisonStats  %>% 
+#   filter(
+#     totalClonotypes>3000,
+#     matchStatus == "notEnoughInfo") %>% 
+#   mutate(depth=factor(depth,levels=c("full", "500K","100K","50K","10K"))) %>% 
+#   ggplot(aes(y=fraction,x=depth,fill=tool))+
+#   geom_boxplot(outlier.shape = NA,position = position_dodge2(preserve = "single"))+
+#   facet_wrap(  ~ matchStatus,
+#                labeller = labeller(inStartRef=c(`FALSE`="Absent in starting reference library",
+#                                                 `TRUE`="Present in starting reference library"),
+#                                    matchStatus=c(
+#                                      tooFewClonesInRepseqNotEnoughInfo="Alleles with insufficient information",
+#                                      match="Alleles supported by long reads",
+#                                                  falseNegative="Alleles missed",
+#                                                  falsePositive="Alleles not supported by long reads")),
+#                nrow=2
+#   )+
+#  # geom_point(position = position_dodge(0.75, preserve = 'total'))+
+#   ggbeeswarm::geom_quasirandom(dodge.width=.8)+
+#   theme_bw()+
+#   scale_fill_manual(values = mi_dark,labels=c("MiXCR","TIgGER"))+
+#   labs(y="Fraction of alleles below detection limits",
+#        x="Downsampling depth",
+#        fill="Genotyping tool") +
+#   theme(legend.position = "none",
+#         strip.background = element_rect(fill="white"))+
+#   stat_summary(fun.data = give.n, geom = "text",size=3,position =position_dodge(0.75, preserve = 'total') )+
+#   stat_summary(fun.data = give.median, geom = "text",size=3,position =position_dodge(0.75, preserve = 'total'))
+
+
+
+```
+
+## Fig1F
+
+```{r}
+alleleComparisonFull17<-
+alleleComparison %>%  
+  filter(matchStatus!="geneNotCatchedInPacBio") %>% 
+  mutate(
+         tool=case_when(tool=="mixcr" ~ "MiXCR",
+                        tool=="tigger" ~ "TIgGER"),
+         detected= matchStatus=="match",
+         includedInAnalysis = matchStatus %in% c("match","falsePositive","falseNegative"),
+         depth=factor(depth,levels=c("full","500K","100K","50K","10K")),
+         ) %>% 
+  filter(donor=="SC-17",!is.na(vGeneFreq)) 
+
+fig1f<-alleleComparisonFull17 %>%  
+  ggplot()+
+  geom_point(aes(x=vGeneFreq,
+                 y=alleleFreqInGene,
+                 color=detected,
+                 alpha=includedInAnalysis,
+                 shape=includedInAnalysis),
+             size=5)+
+  scale_alpha_manual(values=c(0.3,0.75),guide="none")+
+  theme_bw()+
+  scale_color_manual(values = mi_bright[c(3,4)],labels=c("Not detected","Detected"))+
+  scale_shape_manual(values=c(13,16),labels=c("Not enough clones, excluded","Enough clones, included"))+
+  facet_wrap(tool~depth,nrow=2)+
+  labs(x= "V gene frequency within the repertoire (V usage)",
+       y= "Allele frequency within one V gene (Allelic Imbalance)",
+       shape = "Allele expression",
+       color ="Allele detection")+
+  geom_text(data=alleleComparisonFull17 %>% 
+              group_by(depth,tool) %>% 
+              summarise(nAllelesTotal=sum(includedInAnalysis),
+                        nDetected=sum(matchStatus=="match")),
+              aes(label="Detected: " %+% nDetected   ),
+            x = .06, y = 0.8, hjust=1, vjust=0 , size=3
+  ) +
+  theme(legend.position = "bottom",
+        legend.box = "vertical")+ 
+  scale_x_continuous(breaks = seq(0,0.06, by = 0.02), 
+      labels = c(".0",".02",".04",".06"))
+
+ 
+```
+
+## Fig S2 compare FP Tigger vs MiXCR
+
+```{r}
+comparisonStats<-
+    alleleComparison %>%
+   filter(depth=="full") %>%
+  ungroup() %>% 
+  group_by(donor,tool,matchStatus) %>% 
+  # n_disctinct because some of the tools' findings match to multiple genes, while may be the same in sequence
+  summarise(N=n_distinct(alleleSeq.tool,alleleName.iGenotyper)) %>% 
+  ungroup() %>% 
+  complete(matchStatus,nesting(donor,tool),fill=list(N=0)) %>% 
+  group_by(donor,tool) %>% 
+  mutate(nAllelesTotal=sum(N[matchStatus=="match" | matchStatus== "falseNegative"])) %>% 
+  mutate(fraction=N/nAllelesTotal) %>% 
+  left_join(stats %>% select(donor,totalReads:readsUsedInClonotypes)) 
+
+FP_tigger_mixcr<-comparisonStats %>%
+  filter( totalClonotypes>3000,matchStatus %in% c("falsePositive")) %>%
+  pivot_wider(id_cols = c( "matchStatus","donor"),names_from = "tool",values_from = fraction)
+
+
+FPcor<-cor.test(FP_tigger_mixcr %>% arrange(donor) %>%  pull(mixcr,name = donor),
+         FP_tigger_mixcr %>% arrange(donor)%>%  pull(tigger,name = donor))
+
+  
+figS2<-FP_tigger_mixcr %>% 
+  ggplot(aes(x=mixcr,y=tigger))+
+  geom_point(size=3)+
+  geom_smooth(method="lm")+
+  theme_bw()+
+  labs(y="TIgGER: Fraction of alleles not supported by long reads",
+       x="MiXCR: Fraction of alleles not supported by long reads")+
+  annotate("text", x = 0.05, y = 0.6, label = "r (Pearson): " %+% round(FPcor$estimate,digits = 2))+
+  annotate("text", x = 0.005, y = 0.57, label = "p.value: " %+% round(FPcor$p.value,digits = 4))
+
+ggsave("~/paper_alleles/analysis/plots/FigS2.pdf",figS2,device="pdf",
+       width= 8,height=8, units="in",dpi=600)
+ggsave("~/paper_alleles/analysis/plots/FigS2.png",figS2,device="png",
+       width= 8,height=8, units="in",dpi=600) 
+```
+
+## Figure 1
+
+```{r}
+fig1<-plot_grid( plot_grid(fig1a,fig1b, fig1c,nrow=1,labels = c("A","B","C"),
+                           rel_widths = c(1,1,2)),
+                    fig1d,
+                    fig1e,
+                    fig1f,
+                    nrow=4,
+                    labels=c("","D","E","F"),
+                    rel_heights = c(1,1,1,2))
+ggsave("~/paper_alleles/analysis/plots/fig1.pdf",fig1,units = "in",width = 10,height = 16,bg="white")
+ggsave("~/paper_alleles/analysis/plots/fig1.png",fig1,units = "in",width =10,height =16,bg="white")
+```
+
+## 
+
+## COMPARE ON FULL REF
+
+### Fig S1 Read in allele sequences from comparison tools
+
+```{r}
+
+alleles_mixcr_full<-read_tsv(
+  dir("/home/amikelov/paper_alleles/benchmarking/full_mixcr",
+      pattern="tsv",
+      full.names=T) %>% str_subset("clones",negate=T),
+  id="fileName") %>% 
+  filter(str_detect(geneName,"IGHV|IGHJ")) %>% 
+  mutate( donor = str_extract(fileName,"(SC|W)-[0-9]{1,3}")) %>% 
+  #should give 'Missing pieces' warning
+  separate(donor,sep="_", into=c("donor","depth")) %>% 
+  mutate(depth=ifelse(is.na(depth),"full",depth),
+         protocol = str_extract(fileName,"noumi|5race"),
+         tool='mixcr',
+         trimSeqBy=str_remove_all(reliableRegion,"VRegion\\(.,-|\\)|.*\\(|\\}|-") %>% as.integer())
+
+fastaFromMixcr_full<-
+  dir("~/paper_alleles/benchmarking/full_mixcr",
+      pattern="mixcr.fasta",
+      full.names = T)
+  
+  
+fastaFromTigger_imgt<-dir("~/paper_alleles/benchmarking/imgt_immcantation/tigger",
+      pattern = "tigger.fasta",
+      full.names=T)
+
+
+
+alleleFastas_full<-c(fastaFromMixcr_full,
+                fastaFromTigger_imgt)
+
+
+
+
+# read in all fasta files
+all_alleles_full<-lapply(alleleFastas_full,function(fasta){
+  donorAlleleSeq<-readDNAStringSet(fasta)  
+  donorAlleleSeq <- tibble(alleleName=names(donorAlleleSeq) %>%
+                             str_remove("\\|.*"),
+                           alleleSeq=as.character(donorAlleleSeq) %>% 
+                             str_remove_all("\\."),
+                           id = str_remove_all(fasta,".*/|.fasta|_db-pass"),
+                           donor=str_extract(id, "(SC|W)-[0-9]{1,3}") %>%
+                             str_remove("_.*"),
+                           tool=str_remove(id,".*\\."),
+                           depth=str_extract(fasta,"10K|50K|100K|500K"))%>%           
+    mutate(depth=ifelse(is.na(depth),"full",depth)) %>% 
+    dplyr::filter(str_detect(alleleName,"IGHV|IGHJ")) %>% 
+    mutate(geneName=str_remove(alleleName,"\\*.*")) %>% 
+    relocate(id:geneName, .before=alleleName) %>% 
+    unique()
+})
+
+
+all_alleles_full<-all_alleles_full[sapply(all_alleles_full,nrow)!=0] %>% 
+  bind_rows()  %>%  #add info on protocol and CDR3 reliable border
+  left_join(
+    alleles_mixcr_full %>%
+      select(donor, 
+             depth,
+             tool,
+             alleleName,
+             trimSeqBy),
+    by=c("donor","depth","tool","alleleName")) %>% 
+  left_join(
+    tiggerStats %>%
+      select(donor, 
+             depth,
+             tool,
+             geneName,
+             trimSeqBy),
+     by=c("donor","depth","tool","geneName")
+) %>%
+  rename(trimSeqBy=trimSeqBy.x) %>% 
+  mutate(trimSeqBy=ifelse(is.na(trimSeqBy) & tool=="tigger",trimSeqBy.y,trimSeqBy)) %>% 
+  left_join(read_tsv("~/paper_alleles/benchmarking/raw/repseq_meta.tsv") %>% 
+            select(donor,protocol),
+            by="donor")
+  
+```
+
+### Compare alleles by sequence
+
+```{r}
+tools_depths_full<-all_alleles_full %>% 
+  select(donor,tool,depth) %>% unique()
+
+compareJs<-F
+
+alleleComparison_full<-
+  apply(tools_depths_full, 1, function(tldpt){
+    regex_full_join(
+      
+      igenotyper_seq %>%
+                      filter(donor == tldpt["donor"]) %>% 
+                      filter(!str_detect(alleleName,"IGHJ")|compareJs),
+      
+      all_alleles_full %>%
+                      filter(donor == tldpt["donor"],
+                             tool == tldpt["tool"],
+                             depth == tldpt["depth"]) %>%
+                      filter(!str_detect(alleleName,"IGHJ")|compareJs) %>% 
+                      mutate(alleleSeq=ifelse(is.na(trimSeqBy),
+                                              alleleSeq,
+                                              str_sub(alleleSeq,1,-trimSeqBy-1)),
+                             alleleSeq=ifelse(protocol=="noumi",
+                                              str_sub(alleleSeq,20),
+                                              alleleSeq)),
+      by =c ("alleleSeq","donor")) %>%  
+      replace_na(list(donor.y = tldpt["donor"],
+                      tool = tldpt["tool"],
+                      depth = tldpt["depth"]))
+  }) %>% bind_rows() %>% 
+  mutate(geneName=ifelse(is.na(geneName.y),geneName.x,geneName.y),.before=alleleSeq.x) %>% 
+  ungroup() %>%
+  dplyr::rename(
+    donor=donor.y,
+    alleleName.iGenotyper=alleleName.x,
+    alleleSeq.iGenotyper=alleleSeq.x,
+    alleleName.tool=alleleName.y,
+    alleleSeq.tool=alleleSeq.y) %>% 
+  select(-geneName.x,-geneName.y,-donor.x,-protocol)
+
+
+
+#Add information from findAlleles for each gene/donor
+alleleComparison_full %<>% 
+   left_join(alleles_mixcr_full %>%
+             # filter(depth=="full") %>%
+              select(geneName,
+                     depth,
+                     donor,
+                     status,
+                     enoughInfo) %>%
+              unique(),
+            by= c("donor",
+                  "depth",
+                  "geneName")) %>%
+
+  left_join(
+    bind_rows(
+      mixcrStats,
+      tiggerStats
+    ) %>%
+      select(-fileName,-trimSeqBy) %>% 
+      rename(nClonesTotalInGene=nClones),
+    by=c('donor','depth','tool','geneName')
+  ) %>% 
+  mutate(inStartRef=ifelse(is.na(inStartRef),alleleName.tool %in% names(startingRef),inStartRef)) %>%
+  relocate(tool,donor,geneType,geneName,
+           alleleName.iGenotyper,alleleName.tool,
+           id,depth,inStartRef,nClonesInAllele,nNaive,
+           alleleSeq.iGenotyper,alleleSeq.tool,
+           enoughInfo) %>% 
+  # left_join(alleles_mixcr %>% select(alleleName,mutations) %>% unique() %>% filter(!is.na(mutations)),
+  #           by = join_by(alleleName.tool==alleleName),
+  #           multiple = "all")%>% 
+  #add info on protocol
+  left_join(read_tsv("~/paper_alleles/benchmarking/raw/repseq_meta.tsv") %>% 
+              select(donor,protocol),
+            by="donor")
+
+
+
+
+# FP = is.na(alleleName.iGenotyper)
+# FN = is.na(alleleName.tool)
+
+alleleComparison_full %<>%
+  left_join(notCatchedGenesInPullDown %>% mutate(geneNotCatchedInPacBio=TRUE),
+            by=c("geneName","donor")) %>% 
+  replace_na(list(geneNotCatchedInPacBio=FALSE)) %>% 
+  mutate(matchStatus=
+           case_when(
+             nClonesInAllele<=10 ~ "lowExpression",
+             nNaive<=2 ~ "noSuchNaiveExpress",
+             is.na(alleleName.iGenotyper) & geneNotCatchedInPacBio ~ "geneNotCatchedInPacBio",
+              tool=="mixcr" & enoughInfo == F & (status == "COULD_NOT_BE_ALIGNED_ON_KNOWN_VARIANT" | status == "NO_CLONES_TO_SEARCH") ~ "notEnoughInfo",
+             tool=="tigger" & nClonesTotalInGene<50 & inStartRef=="FALSE" ~ "notEnoughInfo",
+             #enoughInfo==FALSE  ~ "tooFewClonesInRepseqNotEnoughInfo",
+             !is.na(alleleName.tool) & !is.na(alleleName.iGenotyper) ~ "match",
+             is.na(alleleName.iGenotyper) ~ "falsePositive",
+             is.na(alleleName.tool) ~ "falseNegative"
+           )) %>% 
+  #join MiXCR stats and filter out shallow sample (<500K reads)
+  left_join(stats %>% select(donor,totalReads),by="donor") %>%
+  filter(totalReads>500000)
+
+
+```
+
+### Genes not catched in PacBio but alleles matched to other genes
+
+```{r}
+fpSeq<-alleleComparison_full %>% 
+  filter(tool=="mixcr",matchStatus=="falsePositive") %>% 
+  select(alleleSeq.tool,alleleName.tool,donor)
+
+notCatchedPBAllelesToDifGenes_full<-alleleComparison_full %>%
+  mutate(geneName.iGenotyper=str_remove(alleleName.iGenotyper,"\\*.*"),
+         geneName.tool=str_remove(alleleName.tool,"\\*.*")) %>%
+  regex_inner_join(fpSeq,by = join_by(alleleSeq.iGenotyper==alleleSeq.tool)) %>%
+  filter(geneName.iGenotyper!=geneName.tool) %>% 
+  select(geneName.iGenotyper,geneName.tool,donor.y) %>% 
+  unique() %>% 
+  rename(donor=donor.y,geneName=geneName.iGenotyper) %>%
+  inner_join(notCatchedGenesInPullDown,by=c("donor","geneName")) %>% 
+  select(-geneName) %>% 
+  unique() %>% 
+  mutate(alleleMatchedToOtherGene=TRUE)
+
+alleleComparison_full %<>%
+  left_join(notCatchedPBAllelesToDifGenes_full %>%
+              mutate(alleleMatchedToOtherGene=TRUE), 
+            by= join_by(donor == donor , geneName==geneName.tool)) %>% 
+  replace_na(list(alleleMatchedToOtherGene=F)) %>% 
+  mutate(matchStatus=ifelse(alleleMatchedToOtherGene,
+                            "geneNotCatchedInPacBio",
+                            matchStatus))
+
+```
+
+## Comparison NOT divided by presence/absence in starting reference library
+
+```{r}
+comparisonStats_full<-
+    alleleComparison_full %>%
+   filter(depth=="full") %>%
+  ungroup() %>% 
+  group_by(donor,tool,matchStatus) %>% 
+  # n_disctinct because some of the tools' findings match to multiple genes, while may be the same in sequence
+  summarise(N=n_distinct(alleleSeq.tool,alleleName.iGenotyper),
+            geneNames=paste(unique(geneName),collapse=",")) %>% 
+  ungroup() %>% 
+  complete(matchStatus,nesting(donor,tool),fill=list(N=0)) %>% 
+  group_by(donor,tool) %>% 
+  mutate(nAllelesTotal=sum(N[matchStatus=="match" | matchStatus== "falseNegative"])) %>% 
+  mutate(fraction=N/nAllelesTotal) %>% 
+  left_join(stats %>% select(donor,totalReads:readsUsedInClonotypes)) 
+
+
+# comparisonOfFN<-full_join(comparisonStats %>% filter(depth=="full"),
+#                           comparisonStats_full,
+#                           by = c("donor", "matchStatus","tool")) %>%
+#                           filter(matchStatus=="falseNegative",tool=="mixcr") %>% 
+# 
+#   mutate(DiffFractions=fraction.y-fraction.x)
+                          
+
+# Fraction matched
+
+give.n <- function(y){
+  return(data.frame(
+    y = -0.07,
+    label = paste0('N=', length(y)))) 
+} 
+
+give.median <- function(y){
+  return(data.frame(
+    y = -0.14,
+    label =  paste0('med=', round(median(y),4)))) 
+}
+
+figS1a<-comparisonStats_full  %>%
+  mutate(
+    grp=tool,
+    tool = ifelse(tool=="mixcr","MiXCR Full Lib",tool),
+    tool = ifelse(tool=="tigger","TIgGER Full Lib",tool)) %>% 
+  bind_rows(comparisonStats %>% 
+              ungroup() %>% 
+              filter(depth=="full") %>% 
+              mutate(grp=tool,
+                     tool = ifelse(grp=="mixcr","MiXCR",tool), 
+                     tool = ifelse(grp=="tigger","TIgGER",tool)) 
+              ) %>% 
+  left_join(read_tsv("~/paper_alleles/benchmarking/raw/repseq_meta.tsv") %>%
+  select(donor,protocol),
+  by="donor") %>%
+  filter(
+   # protocol=="noumi",
+    totalClonotypes>3000,
+    matchStatus == "match") %>%   
+  mutate(matchStatus=factor(matchStatus,levels=c("falseNegative","match","falsePositive"))) %>% 
+  ggplot(aes(y=fraction,x=tool,fill=grp))+
+  geom_boxplot(outlier.shape = NA)+
+  facet_grid( ~ grp,
+              labeller = labeller(grp =c (mixcr="MiXCR",tigger="TIgGER")),
+              scales = "free_x"
+  )+
+  geom_point(position = position_dodge(width=0.75))+
+  theme_bw()+
+  scale_fill_manual(values = mi_dark,labels=c("MiXCR","TIgGER"))+
+  labs(y="Fraction of detected alleles",
+       x="Genotyping tool",
+       fill="Genotyping\ntool")+
+  stat_summary(fun.data = give.n, geom = "text",size=3)+
+  stat_summary(fun.data = give.median, geom = "text",size=3)+
+  #scale_x_discrete(labels=c("MiXCR",  "TIgGER"))+
+  theme(legend.position = "none",
+        strip.background = element_rect(fill="white"))+
+  geom_line(aes(group=donor),alpha=0.5,color="darkgrey")
+#  geom_text_repel(aes(label=donor))
+
+
+
+# N False-positives
+
+
+give.n <- function(y){
+  return(data.frame(
+    y = -1,
+    label = paste0('N=', length(y)))) 
+} 
+
+give.median <- function(y){
+  return(data.frame(
+    y = -2.2,
+    label =  paste0('med=', round(median(y),2)))) 
+}
+
+
+figS1b<-comparisonStats_full  %>%
+  mutate(
+    grp=tool,
+    tool = ifelse(tool=="mixcr","MiXCR Full Lib",tool),
+    tool = ifelse(tool=="tigger","TIgGER Full Lib",tool)) %>% 
+  bind_rows(comparisonStats %>% 
+              ungroup() %>% 
+              filter(depth=="full") %>% 
+              mutate(grp=tool,
+                     tool = ifelse(grp=="mixcr","MiXCR",tool),
+                     tool = ifelse(grp=="tigger","TIgGER",tool))
+              ) %>% 
+  left_join(read_tsv("~/paper_alleles/benchmarking/raw/repseq_meta.tsv") %>%
+  select(donor,protocol),
+  by="donor") %>%
+  filter(
+   # protocol=="noumi",
+    totalClonotypes>3000,
+    matchStatus %in% c("falsePositive")) %>%  
+  mutate(matchStatus=factor(matchStatus,levels=c("falseNegative","match","falsePositive"))) %>% 
+  ggplot(aes(y=N,x=tool,fill=grp))+
+  geom_boxplot(outlier.shape = NA)+
+  facet_grid( ~ grp,
+              labeller = labeller(grp =c (mixcr="MiXCR",tigger="TIgGER")),
+              scales = "free_x"
+  )+
+  geom_point(position = position_dodge(width=0.75))+
+  theme_bw()+
+  scale_fill_manual(values = mi_dark,labels=c("MiXCR","TIgGER"))+
+  labs(y="# potential false positive allele calls",
+       x="Genotyping tool",
+       fill="Genotyping\ntool")+
+  stat_summary(fun.data = give.n, geom = "text",size=3)+
+  stat_summary(fun.data = give.median, geom = "text",size=3)+
+  #scale_x_discrete(labels=c("MiXCR",  "TIgGER"))+
+  theme(legend.position = "none",
+        strip.background = element_rect(fill="white"))+
+  geom_line(aes(group=donor),alpha=0.5,color="darkgrey")
+#  geom_text_repel(aes(label=donor))
+
+figS1<-cowplot::plot_grid(figS1a,figS1b,nrow=2,labels=c("A","B"))
+ggsave("~/paper_alleles/analysis/plots/figS1.pdf",figS1,units = "in",width = 8,height = 8,bg="white")
+ggsave("~/paper_alleles/analysis/plots/figS1.png",figS1,units = "in",width = 8,height = 8,bg="white")
+
+
+
+```
+
+##Which donors were the worst
+
+```{r}
+donorsFail<-
+  left_join(comparisonStats %>% filter(matchStatus=="match"),
+            comparisonStats_full %>% filter(matchStatus=="match"),
+            by=c("donor","tool")) %>% 
+  mutate(fratctionRatio=fraction.x/fraction.y,.after=donor) %>% 
+  relocate(N.x,N.y,nAllelesTotal.x,nAllelesTotal.y,.after=tool)
+
+```
+
+Which changed
+
+```{r}
+
+whichChanged<-function(donor){
+  
+  
+}
+```
+
+## FN vs FPs
+
+```{r}
+
+    alleleComparison_full %>%
+    filter(depth=="full") %>%
+    ungroup() %>% 
+    group_by(donor,tool,matchStatus) %>% 
+    # n_disctinct because some of the tools' findings match to multiple genes, while may be the same in sequence
+    summarise(N=n_distinct(alleleSeq.tool,alleleName.iGenotyper),
+              geneNames=list(unique(geneName))) %>% 
+    ungroup() %>% 
+    complete(matchStatus,nesting(donor,tool),fill=list(N=0)) %>% 
+    group_by(donor,tool) %>% 
+    mutate(nAllelesTotal=sum(N[matchStatus=="match" | matchStatus== "falseNegative"])) %>% 
+    mutate(fraction=N/nAllelesTotal) %>% 
+    left_join(stats %>% select(donor,totalReads:readsUsedInClonotypes)) %>% 
+        filter(matchStatus %in% c("falseNegative","falsePositive"),tool=="mixcr") %>%
+        ungroup() %>% group_by(donor) %>% 
+        filter(!any(N==0)) %>% 
+        reframe(geneName=intersect(geneNames[[1]],geneNames[[2]]) ) %>%
+        left_join(alleleComparison_full %>% filter(matchStatus=="falseNegative",tool=="mixcr") %>% select(donor,geneName,alleleName.iGenotyper,alleleSeq.iGenotyper),by=c("donor","geneName")) %>% rename(alleleName.FN=alleleName.iGenotyper,alleleSeq.FN=alleleSeq.iGenotyper) %>%
+        left_join(alleleComparison_full %>% filter(matchStatus=="falsePositive",tool=="mixcr") %>% select(donor,geneName,alleleName.tool,alleleSeq.tool),by=c("donor","geneName")) %>% rename(alleleName.FP=alleleName.tool,alleleSeq.FP=alleleSeq.tool) %>% 
+        mutate(relativeMutations=mapply(mutationsAlaMixcr, alleleSeq.FN,alleleSeq.FP) %>% str_remove("D.1 D.2 D.3 D.4 D.5 D.6 "), clearedRelMut=relativeMutations %>% str_extract_all("S.\\d{1,3}.") %>% sapply(paste, collapse=" ")) %>% relocate(clearedRelMut, .after=donor) %>%  View()
+```
+
+## 
