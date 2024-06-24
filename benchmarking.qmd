@@ -262,6 +262,8 @@ realpath *_assemble-pass.fastq | parallel -j 68 --line-buffer  'docker exec igb 
 
 ## TIgGER inference
 
+### Load reference DBs and define function for TIgGER pipeline
+
 ```{r}
 
 germlineDb_watsonlab<-readIgFasta("/home/amikelov/paper_alleles/watsonlab_IGH_VRegion_padded.fasta")
@@ -305,16 +307,43 @@ tigger_pipeline<-function(filenames,out_folder,germlineDb){
 }
 ```
 
+### Run TIgGER w/ benchmarking  for 5'RACE downsampled
+
 ```{r}
-bench<-lapply(dir("~/paper_alleles/benchmarking/immcantation/downsampled/5race",
+bench_5race_downsampled <-lapply(dir("~/paper_alleles/benchmarking/immcantation/downsampled/5race",
                   pattern="_db-pass.tsv",
                   full.names = T),
        tigger_pipeline,
        "/home/amikelov/paper_alleles/benchmarking/immcantation/tigger/",
        germlineDb = germlineDb_watsonlab)
 
-purrr::keep(bench
 
+
+
+purrr::keep(bench_5race_downsampled, function(x) any(class(x) == "character"))
+bench_df<-purrr::keep(bench_5race_downsampled, function(x) all(class(x) != "character"))
+
+
+sample_ids<-dir("~/paper_alleles/benchmarking/immcantation/downsampled/5race",
+                  pattern="_db-pass.tsv") |> 
+  str_replace("K_.*","K")
+
+names(bench_5race_downsampled)<-sample_ids
+
+bench_df <- lapply(sample_ids, function(id){
+  b<-bench_5race_downsampled[[id]]
+  print(is_tibble(b))
+  if(is_tibble(b)){
+    tibble(sampleId=id,
+           time=b$total_time,
+           memory=b$mem_alloc)
+  } else {
+     tibble(sampleId=id,
+           time=bench::as_bench_time(NA),
+           memory=bench::as_bench_bytes(NA))
+  }
+  
+})
 ```
 
 ## iGenotyper - long-read based genotypes
