@@ -121,37 +121,180 @@ tibble(sra=rep(depth_corey$sra,5) %>% sort(),
 ```{bash}
 cat oscar-coreyw-downsampling_depth.tsv | parallel --colsep '\t' -j3 'sample_depth_k=$(echo "{2}/1000" | bc); \
 	input_files=( $(find ~/paper_alleles/raw0/watson/5race -type f -name "{1}*R2*.fastq") \
-	$(find ~/paper_alleles/raw0/watson/noumi/primerTrimmed -type f -name "{1}*R2*.fastq") ); \
+	$(find ~/paper_alleles/raw0/watson/noumi/ -type f -name "{1}*R2*.fastq") ); \
 	input_file="${input_files}"; \
-	input_file=$(echo "$input_file" | sed "s|/qualityModified/primerTrimmed||g"); \
-	output_file="${input_file}_${sample_depth_k}K.fastq"; \
+	output_file="${input_file%%.fastq}_${sample_depth_k}K.fastq"; \
+	output_file=$(echo "$output_file" | sed "s|noumi|downsampled/noumi|g"); \
+		output_file=$(echo "$output_file" | sed "s|5race|downsampled/5race|g"); \
+	echo $input_file;
+	echo $output_file ;
 	seqtk sample -s1707 "$input_file" "{2}" > "$output_file"'
-	
-	
+
+
 cat oscar-coreyw-downsampling_depth.tsv | parallel --colsep '\t' -j3 'sample_depth_k=$(echo "{2}/1000" | bc); \
 	input_files=( $(find ~/paper_alleles/raw0/watson/5race -type f -name "{1}*R1*.fastq") \
-	$(find ~/paper_alleles/raw0/watson/noumi/primerTrimmed -type f -name "{1}*R1*.fastq") ); \
-	echo $input_files; \
+	$(find ~/paper_alleles/raw0/watson/noumi/ -type f -name "{1}*R1*.fastq") ); \
 	input_file="${input_files}"; \
-	input_file=$(echo "$input_file" | sed "s|/qualityModified/primerTrimmed||g"); \
-	output_file="${input_file}_${sample_depth_k}K.fastq"; \
-	echo $output_file;\
-	seqtk sample -s1707 "$input_file" "{2}" > "$output_file"'
+	output_file="${input_file%%.fastq}_${sample_depth_k}K.fastq"; \
+	output_file=$(echo "$output_file" | sed "s|noumi|downsampled/noumi|g"); \
+		output_file=$(echo "$output_file" | sed "s|5race|downsampled/5race|g"); \
+	echo $input_file;
+	echo $output_file ;
+	seqtk sample -s1707 "$input_file" "{2}" > "$output_file"'	
+	
 
-mkdir /paper_alleles/raw0/watson/downsampled/5race
-mkdir /paper_alleles/raw0/watson/downsampled/noumi
-cd /paper_alleles/raw0/watson/5race/
-mv *K.fastq ../downsampled/5race/
-
-cd /paper_alleles/raw0/watson/noumi/primerTrimmed/
-mv *K.fastq ../downsampled/noumi/
+# mkdir /paper_alleles/raw0/watson/downsampled/5race
+# mkdir /paper_alleles/raw0/watson/downsampled/noumi
+# cd /paper_alleles/raw0/watson/5race/
+# mv *K.fastq ../downsampled/5race/
+# 
+# cd /paper_alleles/raw0/watson/noumi/primerTrimmed/
+# mv *K.fastq ../downsampled/noumi/
 
 	
 ```
 
-## [MiXCR]{.underline} upstream pipeline for full and downsampled data using minimal library (=1 allele per V/J gene)
+## [MiXCR]{.underline}
 
-## Immcantation upstream pipeline for full and downsampled data using minimal library (=1 allele per V/J gene)
+### Upstream pipeline
+
+**For full and downsampled data using minimal library (=1 allele per V/J gene)**
+
+```{bash}
+#Data without UMIs
+cd ~/paper_alleles/raw0/watson/noumi
+ls *_R1*fastq |parallel --line-buffer -j 23 'echo {}; \
+  mixcr -Xmx16g analyze generic-bcr-amplicon \
+  --library watsonlab_lib \
+  --species hs \
+  --rna -f \
+  -Massemble.cloneAssemblerParameters.badQualityThreshold=-1 \
+  -Massemble.cloneAssemblerParameters.minimalQuality=1 \
+  --rigid-left-alignment-boundary \
+  --floating-right-alignment-boundary C    \
+  --assemble-clonotypes-by "{FR1Begin(+6):FR4End}" \
+  --split-clones-by C \
+  {} {= s:_R1:_R2: =}\
+  ~/paper_alleles/benchmarking/mixcr/noumi/{= s:_R1.fastq:: =}'
+
+#Data without UMIs downsampled. "{FR1Begin(+6):FR4End}" Because the primers were on Leader and were cut
+cd /home/amikelov/paper_alleles/raw0/watson/downsampled/noumi
+
+ls *_R1_*fastq |parallel --line-buffer -j 23 'echo {}; \
+  mixcr -Xmx16g analyze generic-bcr-amplicon \
+  --library watsonlab_lib \
+  --species hs \
+  --rna -f \
+  -Massemble.cloneAssemblerParameters.badQualityThreshold=-1 \
+  -Massemble.cloneAssemblerParameters.minimalQuality=1 \
+  --rigid-left-alignment-boundary \
+  --floating-right-alignment-boundary C    \
+  --assemble-clonotypes-by "{FR1Begin(+6):FR4End}" \
+  --split-clones-by C \
+  {} {= s:_R1:_R2: =}\
+  /home/amikelov/paper_alleles/benchmarking/mixcr/downsampled/noumi/{= s:_R1::;s:.fastq:: =}'
+
+#
+
+#Data with UMIs
+cd /home/amikelov/paper_alleles/raw0/watson/5race
+ls *_R1.fastq*| parallel --line-buffer -j 26 \
+  'mixcr -Xmx20g analyze generic-bcr-amplicon-umi \
+  -f --species hs --rna \
+  --library watsonlab_lib  \
+  --rigid-left-alignment-boundary \
+  --floating-right-alignment-boundary C \
+  --tag-pattern "^(R1:*) \ ^(UMI:N{"12"})GTACG{"1:10"}(R2:*)" \
+  --assemble-clonotypes-by VDJRegion \
+  --split-clones-by C \
+  {} {= s:_R1:_R2: =} \
+  ~/paper_alleles/benchmarking/mixcr/5race/{= s:_R1.fastq:: =}'
+  
+#Data without UMIs
+cd /home/amikelov/paper_alleles/raw0/watson/downsampled/5race
+ls *_R1_*| parallel --line-buffer -j 40 \
+  'mixcr -Xmx10g analyze generic-bcr-amplicon-umi \
+  -f --species hs --rna \
+  --library watsonlab_lib  \
+  --rigid-left-alignment-boundary \
+  --floating-right-alignment-boundary C \
+  --tag-pattern "^(R1:*) \ ^(UMI:N{"12"})GTACG{"1:10"}(R2:*)" \
+  --assemble-clonotypes-by VDJRegion \
+  --split-clones-by C \
+  {} {= s:_R1_:_R2_: =} \
+  ~/paper_alleles/benchmarking/mixcr/downsampled/5race/{= s:_R1::;s:.fastq:: =}'
+```
+
+### findAlleles inference with benchmarking
+
+```{bash}
+
+cd ~/paper_alleles/benchmarking/mixcr/noumi
+mkdir findAlleles
+
+ls *clns |parallel -j 46 --line-buffer \
+  "/usr/bin/time -f '\t%e real,\t%U user,\t%S sys,\t%K avmem,\t%M maxmem' \
+  -o findAlleles/{.}.time.log mixcr findAlleles \
+  -t 10 \
+  --no-clns-output \
+  --export-library findAlleles/{.}.fasta \
+  --export-alleles-mutations findAlleles/{.}.tsv \
+  {} > findAlleles/{.}.report.log"
+  
+cd ~/paper_alleles/benchmarking/mixcr/5race
+mkdir findAlleles
+
+ls *clns |parallel -j 46 --line-buffer \
+  "/usr/bin/time -f '\t%e real,\t%U user,\t%S sys,\t%K avmem,\t%M maxmem' \
+  -o findAlleles/{.}.time.log mixcr findAlleles \
+  -t 10 \
+  --no-clns-output \
+  --export-library findAlleles/{.}.fasta \
+  --export-alleles-mutations findAlleles/{.}.tsv \
+  {} > findAlleles/{.}.report.log"
+  
+cd ~/paper_alleles/benchmarking/mixcr/downsampled/noumi
+mkdir findAlleles
+
+ls *clns |parallel -j 46 --line-buffer \
+  "/usr/bin/time -f '\t%e real,\t%U user,\t%S sys,\t%K avmem,\t%M maxmem' \
+  -o findAlleles/{.}.time.log mixcr findAlleles \
+  -t 10 \
+  --no-clns-output \
+  --export-library findAlleles/{.}.fasta \
+  --export-alleles-mutations findAlleles/{.}.tsv \
+  {} > findAlleles/{.}.report.log"
+  
+cd ~/paper_alleles/benchmarking/mixcr/downsampled/5race
+mkdir findAlleles
+
+ls SRR23446575*500K*clns |parallel -j 46 --line-buffer \
+  "/usr/bin/time -f '\t%e real,\t%U user,\t%S sys,\t%K avmem,\t%M maxmem' \
+  -o findAlleles/{.}.time.log mixcr -V develop findAlleles \
+  -t 10 \
+  --no-clns-output \
+  --export-library findAlleles/{.}.fasta \
+  --export-alleles-mutations findAlleles/{.}.tsv \
+  {} > findAlleles/{.}.report.log"
+  
+```
+
+## Immcantation upstream pipeline for full data, minimal library
+
+### Run IgBlast
+
+```{bash}
+docker run --name igb -v /home/amikelov/:/home/amikelov/ -it immcantation/suite:4.4.0 /bin/bash
+mv /usr/local/share/germlines/imgt/human/vdj/imgt_human_IGHV.fasta /home/amikelov/paper_alleles/
+cp /home/amikelov/paper_alleles/watsonlab_IGH_VRegion_padded.fasta /usr/local/share/germlines/imgt/human/vdj/imgt_human_IGHV.fasta
+cp /home/amikelov/.mixcr/libraries/watsonlab_lib.v.fasta /usr/local/share/igblast/fasta/imgt_human_ig_v.fasta
+cp /home/amikelov/.mixcr/libraries/watsonlab_lib.j.fasta /usr/local/share/igblast/fasta/imgt_human_ig_j.fasta
+cp /home/amikelov/.mixcr/libraries/watsonlab_lib.d.fasta /usr/local/share/igblast/fasta/imgt_human_ig_d.fasta
+
+realpath  *[2s].fasta | parallel -j 88 --line-buffer  'docker exec igb changeo-igblast -r /usr/local/share/germlines/imgt/human/vdj -s {} -n {} -p 3 -o /home/amikelov/paper_alleles/benchmarking/immcantation_fasta/igblast'
+```
+
+## Immcantation upstream downsampled data, minimal library
 
 ### Data with UMI
 
@@ -245,6 +388,11 @@ cp /home/amikelov/.mixcr/libraries/watsonlab_lib.d.fasta /usr/local/share/igblas
 realpath *_collapse-unique.fastq | parallel -j 88 --line-buffer  'docker exec igb changeo-igblast -r /usr/local/share/germlines/imgt/human/vdj -s {} -n {} -p 3 -o /home/amikelov/paper_alleles/benchmarking/immcantation/downsampled/5race/igblast'
 ```
 
+```{bash}
+
+realpath *_assemble-pass.fastq | parallel -j 88 --line-buffer  'docker exec igb changeo-igblast -r /usr/local/share/germlines/imgt/human/vdj -s {} -n {} -p 3 -o /home/amikelov/paper_alleles/benchmarking/immcantation/downsampled/noumi/igblast'
+```
+
 ### Data without UMI
 
 #### Assemble pairs from downsampled data
@@ -252,12 +400,19 @@ realpath *_collapse-unique.fastq | parallel -j 88 --line-buffer  'docker exec ig
 ```{bash}
 
 realpath ~/paper_alleles/raw0/watson/downsampled/noumi/*_R1_*|parallel  -j 88  --line-buffer 'AssemblePairs.py align -1 {} -2 {= s:_R1_:_R2_: =} --coord sra --rc tail --outdir '~/paper_alleles/benchmarking/immcantation/downsampled/noumi/' --outname {= s:_R1::;s:.*\/:: =} --log AP.log'
+
+
+
 ```
 
 #### Run IgBlast
 
 ```{bash}
+
+cd ~/paper_alleles/benchmarking/immcantation_fasta
 realpath *_assemble-pass.fastq | parallel -j 68 --line-buffer  'docker exec igb changeo-igblast -r /usr/local/share/germlines/imgt/human/vdj -s {} -n {= s::: =} -p 3 -o /home/amikelov/paper_alleles/benchmarking/immcantation/downsampled/noumi/igblast'
+
+cd
 ```
 
 ## TIgGER inference
@@ -302,12 +457,12 @@ tigger_pipeline<-function(filenames,out_folder,germlineDb){
              fractionInAlleles=countInAlleles/total)
     
     write_tsv(allele_db, out_folder %+% id %+% "_tigger.tsv")
-    return(benchm)
+    return(benchm |> select(total_time,mem_alloc))
   }, error= function(e) paste(filenames,e,sep=":" ) )
 }
 ```
 
-### Run TIgGER w/ benchmarking  for 5'RACE downsampled
+### Run TIgGER w/ benchmarking
 
 ```{r}
 bench_5race_downsampled <-lapply(dir("~/paper_alleles/benchmarking/immcantation/downsampled/5race",
@@ -317,11 +472,20 @@ bench_5race_downsampled <-lapply(dir("~/paper_alleles/benchmarking/immcantation/
        "/home/amikelov/paper_alleles/benchmarking/immcantation/tigger/",
        germlineDb = germlineDb_watsonlab)
 
+bench_noumi_downsampled <-lapply(dir("~/paper_alleles/benchmarking/immcantation/downsampled/noumi",
+                  pattern="_db-pass.tsv",
+                  full.names = T),
+       tigger_pipeline,
+       "/home/amikelov/paper_alleles/benchmarking/immcantation/tigger/",
+       germlineDb = germlineDb_watsonlab)
 
 
-
-purrr::keep(bench_5race_downsampled, function(x) any(class(x) == "character"))
-bench_df<-purrr::keep(bench_5race_downsampled, function(x) all(class(x) != "character"))
+bench_full <-lapply(dir("~/paper_alleles/benchmarking/immcantation_fasta",
+                  pattern="_db-pass.tsv",
+                  full.names = T),
+       tigger_pipeline,
+       "/home/amikelov/paper_alleles/benchmarking/immcantation_fasta/tigger/",
+       germlineDb = germlineDb_watsonlab)
 
 
 sample_ids<-dir("~/paper_alleles/benchmarking/immcantation/downsampled/5race",
@@ -343,7 +507,16 @@ bench_df <- lapply(sample_ids, function(id){
            memory=bench::as_bench_bytes(NA))
   }
   
-})
+}) |> bind_rows()
+```
+
+## Time / Memory benchmarking
+
+```{r}
+read_tsv(dir("~/paper_alleles/benchmarking/mixcr/5race/findAlleles/",
+             pattern = "*.time.log",
+             full.names = T)
+)
 ```
 
 ## iGenotyper - long-read based genotypes
@@ -353,10 +526,14 @@ Read iGenotyper output - bed haplotypes
 ```{r}
 
 #list donors with repseq
-donorsWithRepseq<- dir("~/paper_alleles/benchmarking/raw/repseq/",
-                       pattern="R1") %>%
+donorsWithRepseq<- c(
+  dir("~/paper_alleles/raw0/watson/noumi/primerTrimmed",pattern="_R1") %>%
+  str_remove("_R1.fastq") %>% 
+  str_remove(".*?_"),
+  dir("~/paper_alleles/raw0/watson/5race",pattern="_R1") %>%
   str_remove("_R1.fastq") %>% 
   str_remove(".*?_")
+)
 
 
 
@@ -386,6 +563,17 @@ igenotyper_haplotype<-
 Assign sequences to haplotypes from iGenotyper
 
 ```{r}
+iuis_ref<-readDNAStringSet("~/ref/imgt_vj.fasta")
+iuis_ref<-tibble(alleleSeq=as.character(iuis_ref),
+                 alleleName=names(iuis_ref) %>% str_remove("\\|.*"))
+
+
+startingRef<-readDNAStringSet("~/.mixcr/libraries/watsonlab_lib.v.fasta")  %>% 
+  as.character() %>% 
+  c(readDNAStringSet("~/.mixcr/libraries/watsonlab_lib.j.fasta") %>% 
+      as.character())
+
+
 igenotyper_seq<-igenotyper_haplotype %>% 
   mutate(alleleName=case_when(
     str_detect(allele,".*[0-9].*") ~ geneName %+%
@@ -430,7 +618,7 @@ igenotyper_seq %<>%
 
 ```
 
-## Add to iGenotyper expression information from Rep-Seq
+## Add to iGenotyper expression information from Rep-Seq using donor-specific PacBio-derived individualized reference libraries
 
 ### Write fasta files for processing with MiXCR
 
@@ -454,9 +642,9 @@ igenotyper_seq %>%
 ```{bash}
 cd ~/paper_alleles/benchmarking/igenotyper/mixcr/
 
-ls *V*fasta|parallel 'repseqio -V alleles fromFasta -f --taxon-id 9606 --species-name hs --species-name homsap --species-name hsa --chain IGH --name-index 0 --gene-type V --gene-feature VRegion {} {.}.json'
+ls *V*fasta|parallel -j 10 'repseqio -V alleles fromFasta -f --taxon-id 9606 --species-name hs --species-name homsap --species-name hsa --chain IGH --name-index 0 --gene-type V --gene-feature VRegion {} {.}.json'
 
-ls *J*fasta|parallel 'repseqio -V alleles fromFasta -f --taxon-id 9606 --species-name hs --species-name homsap --species-name hsa --chain IGH --name-index 0 --gene-type J --gene-feature JRegion {} {.}.json'
+ls *J*fasta|parallel -j 10 'repseqio -V alleles fromFasta -f --taxon-id 9606 --species-name hs --species-name homsap --species-name hsa --chain IGH --name-index 0 --gene-type J --gene-feature JRegion {} {.}.json'
 
 
 ```
@@ -465,8 +653,11 @@ ls *J*fasta|parallel 'repseqio -V alleles fromFasta -f --taxon-id 9606 --species
 
 ```{bash}
 rm -r *mifdx
+cp ~/.mixcr/libraries/watson*fasta ./
+cp ~/.mixcr/libraries/IGHC_repseqio.fasta ./
 
-ls *V*json |cut -f 1 -d "_" | parallel -j 10 --line-buffer 'echo {}; J=$(ls {}_*J.json); repseqio -V alleles  merge --replace-duplicate-genes -f  {}_*V.json /home/amikelov/ref/watson_hg38/watsonlab_lib.v.json /home/amikelov/ref/watson_hg38/watsonlab_lib.d.json $J /home/amikelov/ref/watson_hg38/watsonlab_lib.j.json /home/amikelov/paper_alleles/benchmarking/igenotyper/mixcr/watsonlab_lib.c.json {}_iGenotyper.json; repseqio  -V alleles  inferPoints -f -g VRegion -g JRegion  {}_iGenotyper.json {}_iGenotyper.json'
+#Ignore "no such file" which happens for some donors - it's just because they don't have calls from PacBio for Js
+ls *V*json |cut -f 1 -d "_" | parallel -j 10 --line-buffer 'echo {}; J=$(ls {}_*J.json); repseqio -V alleles  merge --replace-duplicate-genes -f  {}_*V.json /home/amikelov/.mixcr/libraries/watsonlab_lib.v.json /home/amikelov/.mixcr/libraries/watsonlab_lib.d.json $J /home/amikelov/.mixcr/libraries/watsonlab_lib.j.json /home/amikelov/.mixcr/libraries/watsonlab_lib.c.json {}_iGenotyper.json; repseqio  -V alleles  inferPoints -f -g VRegion -g JRegion  {}_iGenotyper.json {}_iGenotyper.json'
 ```
 
 ### Run debug and collect broken V and J genes
@@ -480,13 +671,13 @@ ls *iGenotyper.json| parallel 'repseqio -V alleles debug  -p {}' |grep -A3 IGHJ 
 
 paste <(grep IGHV debug.txt|sed 's/ .*//') <(cat debug.txt | grep -E "stop|start") |sort |uniq >debug.tsv
 
-#repseqio throws exception on  IGHV4-61*novel-3 and IGHJ1*novel-1 which are both extremely truncated iGenotyper hits. need to remove them manually
-# add to debug tsv  IGHV4-61*novel-3  IGHJ1*novel-1
-echo -e 'IGHV4-61*novel-3\tFR1 contains a stop codon' >> debug.tsv
+#repseqio throws exception on  IGHV4-61*novel-2 and IGHJ1*novel-1 which are both extremely truncated iGenotyper hits. need to remove them manually
+# add to debug tsv  IGHV4-61*novel-2  IGHJ1*novel-1
+echo -e 'IGHV4-61*novel-2\tFR1 contains a stop codon' >> debug.tsv
 echo -e 'IGHJ1*novel-1\ttruncated' >> debug.tsv
 ```
 
-### Remove all genes which didn't pass debug and write cleaned fasta
+### Remove all non-functional/truncated genes (which didn't pass debug) and write cleaned fasta
 
 ```{r}
 
@@ -510,9 +701,9 @@ cd ~/paper_alleles/benchmarking/igenotyper/mixcr/
 
 rm *mifdx
 
-ls *V*fasta|parallel 'repseqio -V alleles fromFasta -f --taxon-id 9606 --species-name hs --species-name homsap --species-name hsa --chain IGH --name-index 0 --gene-type V --gene-feature VRegion {} {.}.json'
+ls *V*fasta|parallel -j 10 'repseqio -V alleles fromFasta -f --taxon-id 9606 --species-name hs --species-name homsap --species-name hsa --chain IGH --name-index 0 --gene-type V --gene-feature VRegion {} {.}.json'
 
-ls *J*fasta|parallel 'repseqio -V alleles fromFasta -f --taxon-id 9606 --species-name hs --species-name homsap --species-name hsa --chain IGH --name-index 0 --gene-type J --gene-feature JRegion {} {.}.json'
+ls *J*fasta|parallel -j 10 'repseqio -V alleles fromFasta -f --taxon-id 9606 --species-name hs --species-name homsap --species-name hsa --chain IGH --name-index 0 --gene-type J --gene-feature JRegion {} {.}.json'
 
 
 ```
@@ -520,9 +711,13 @@ ls *J*fasta|parallel 'repseqio -V alleles fromFasta -f --taxon-id 9606 --species
 ### Merge jsons for V D J C and infer Points
 
 ```{bash}
-rm *mifdx
+rm -r *mifdx
 
-ls *V*json |cut -f 1 -d "_" | parallel -j 10 --line-buffer 'echo {}; J=$(ls {}_*J.json); repseqio -V alleles  merge --replace-duplicate-genes -f  {}_*V.json /home/amikelov/ref/watson_hg38/watsonlab_lib.v.json /home/amikelov/ref/watson_hg38/watsonlab_lib.d.json $J /home/amikelov/ref/watson_hg38/watsonlab_lib.j.json /home/amikelov/paper_alleles/benchmarking/igenotyper/mixcr/watsonlab_lib.c.json {}_iGenotyper.json; repseqio  -V alleles  inferPoints -f -g VRegion -g JRegion  {}_iGenotyper.json {}_iGenotyper.json'
+
+
+
+#Ignore "no such file" which happens for some donors - it's just because they don't have calls from PacBio for Js
+ls *V*json |cut -f 1 -d "_" | parallel -j 10 --line-buffer 'echo {}; J=$(ls {}_*J.json); repseqio -V alleles  merge --replace-duplicate-genes -f  {}_*V.json /home/amikelov/.mixcr/libraries/watsonlab_lib.v.json /home/amikelov/.mixcr/libraries/watsonlab_lib.d.json $J /home/amikelov/.mixcr/libraries/watsonlab_lib.j.json /home/amikelov/.mixcr/libraries/watsonlab_lib.c.json {}_iGenotyper.json; repseqio  -V alleles  inferPoints -f -g VRegion -g JRegion  {}_iGenotyper.json {}_iGenotyper.json'
 ```
 
 ### Run Mixcr upstream for benchmarking data, but on donor-specific references from long-reads based genotypes (cleaned from non-functional alleles)
@@ -530,22 +725,19 @@ ls *V*json |cut -f 1 -d "_" | parallel -j 10 --line-buffer 'echo {}; J=$(ls {}_*
 ```{bash}
 
 # 5'RACE
-parallel --line-buffer  -j 4 'id=$(ls ../../raw/repseq/{}*R1* | cut -f 1-2 -d "_"|sed "s/.*\\///"); donor=$(echo $id|cut -d "_" -f 2);echo $id;echo $donor; mixcr -Xmx22g -V alleles analyze generic-bcr-amplicon-umi  -f --species hs --library ${donor}_iGenotyper --rna --rigid-left-alignment-boundary --floating-right-alignment-boundary C --tag-pattern "^(R1:*) \ ^(UMI:N{"12"})GTACG{1:10}(R2:*)"   --assemble-clonotypes-by VDJRegion --split-clones-by C ../../raw/repseq/${id}_{{R}}.fastq  $id' ::: SRR23446568 SRR23446580 SRR23446567 SRR23446566 SRR23446585 SRR23446587 SRR23446564 SRR23446565 SRR23446588 SRR23446578 SRR23446563 SRR23446579 SRR23446569 SRR23446577 SRR23446571 SRR23446582 SRR23446576 SRR23446572 SRR23446573 SRR23446583 SRR23446574 SRR23446584 SRR23446589 SRR23446586 SRR23446581 SRR23446590 SRR23446575
+parallel  --line-buffer  -j 30 'id=$(ls ../../../raw0/watson/5race/{}*R1* | cut -f 1-2 -d "_"|sed "s/.*\\///"); donor=$(echo $id|cut -d "_" -f 2);echo $id;echo $donor; mixcr -Xmx16g analyze generic-bcr-amplicon-umi  -f --species hs --library ${donor}_iGenotyper --rna --rigid-left-alignment-boundary --floating-right-alignment-boundary C --tag-pattern "^(R1:*) \ ^(UMI:N{"12"})GTACG{1:10}(R2:*)"   --assemble-clonotypes-by VDJRegion --split-clones-by C ../../../raw0/watson/5race/${id}_{{R}}.fastq  $id' ::: SRR23446568 SRR23446580 SRR23446567 SRR23446566 SRR23446585 SRR23446587 SRR23446564 SRR23446565 SRR23446588 SRR23446578 SRR23446563 SRR23446579 SRR23446569 SRR23446577 SRR23446571 SRR23446582 SRR23446576 SRR23446572 SRR23446573 SRR23446583 SRR23446574 SRR23446584 SRR23446589 SRR23446586 SRR23446581 SRR23446590 SRR23446575
 
 # Leader multiplex
 parallel --line-buffer  -j 4 'id=$(ls ../../raw/repseq/{}*R1* | cut -f 1-2 -d "_"|sed "s/.*\\///"); donor=$(echo $id|cut -d "_" -f 2);echo $id;echo $donor; mixcr -Xmx22g -V alleles analyze generic-bcr-amplicon  -f -Massemble.cloneAssemblerParameters.badQualityThreshold=-1 --species hs --library ${donor}_iGenotyper --rna --rigid-left-alignment-boundary --floating-right-alignment-boundary C --assemble-clonotypes-by VDJRegion --split-clones-by C ../../raw/repseq/${id}_{{R}}.fastq  $id' ::: SRR23654543 SRR23654534 SRR23654549 SRR23654586 SRR23654539 SRR23654573 SRR23654545 SRR23654542 SRR23654584 SRR23654561 SRR23654546 SRR23654560 SRR23654548 SRR23654577 SRR23654587 SRR23654583 SRR23654575 SRR23654552 SRR23654541 SRR23654582 SRR23654562 SRR23654553 SRR23654551 SRR23654558 SRR23654537 SRR23654557 SRR23654588 SRR23654576 SRR23654536 SRR23654563 SRR23654559 SRR23654550 SRR23654544 SRR23654533 SRR23654554 SRR23654547 SRR23654556 SRR23654565 SRR23654585 SRR23654535 SRR23654574 SRR23654555 SRR23654572 SRR23654540 SRR23654538
 
 
-ls /home/amikelov/paper_alleles/benchmarking/raw/repseq/noumi/*R1.fastq | \
+ls /home/amikelov/paper_alleles/raw0/watson/noumi/*R1.fastq | \
     cut -f 1-3 -d "_"| \
-    parallel -S 3/bober0.milaboratories.com -S 3/bober1.milaboratories.com \
-    -S 3/bober2.milaboratories.com \
-    -S 3/candibober0.milaboratories.com \
-    --line-buffer  \
+    parallel  --line-buffer -j 23 \
     'cd /home/amikelov/paper_alleles/benchmarking/igenotyper/mixcr;
      donor=$(echo {} |grep -E -o  "W-[0-9]{1,3}");
     echo {}; echo $donor;
-    /software/mixcr/mixcr -Xmx22g analyze generic-bcr-amplicon \
+    mixcr -Xmx22g analyze generic-bcr-amplicon -f \
     -Massemble.cloneAssemblerParameters.badQualityThreshold=1 \
     -Massemble.cloneAssemblerParameters.minimalQuality=1 \
     -Malign.parameters.vParameters.parameters.maxHits=4 \
@@ -555,7 +747,7 @@ ls /home/amikelov/paper_alleles/benchmarking/raw/repseq/noumi/*R1.fastq | \
     --floating-right-alignment-boundary C \
     --assemble-clonotypes-by "{FR1Begin(+6):FR4End}" \
     --split-clones-by C {}*_R1.fastq {}*_R2.fastq \
-    {= s:.*/:: =}'
+    {= s:.*/::;s:_R1.fastq:: =}'
 
 
 ls  /home/amikelov/paper_alleles/benchmarking/raw/repseq/5race/*R1*.fastq | parallel \

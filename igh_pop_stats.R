@@ -44,7 +44,11 @@ goodDepthDonors<-mixcr_stats %>%
 
 # Load findAlleles tsv outputs to determine significant vGenes ----
 findAllelesOutput<-sapply(goodDepthDonors, function(don){
-  dir("/home/amikelov/paper_alleles", pattern = don %+% "\\..*tsv",full.names = T,recursive = T) %>% str_subset("\\/alleles\\/")%>% str_subset("archive",negate=T)
+  c(dir("/home/amikelov/paper_alleles/boyd_fastq/alleles", pattern = don %+% "\\..*tsv",full.names = T),
+    dir("/home/amikelov/paper_alleles/boyd/alleles", pattern = don %+% "\\..*tsv",full.names = T),
+    dir("/home/amikelov/paper_alleles/watson/alleles", pattern = don %+% "\\..*tsv",full.names = T),
+    dir("/home/amikelov/paper_alleles/PRJEB26509_naiveIGH/alleles", pattern = don %+% "\\..*tsv",full.names = T)
+  )
 })
 
 findAllelesOutput<-read_tsv(findAllelesOutput,id="fileName") %>% 
@@ -387,6 +391,79 @@ alleleStats<-alleles_db %>%
   unnest() %>% 
   group_by(ethnicity,geneName) %>% 
   summarise(nAlleles=round(mean(nAlleles)),minNDonorsForGene=dplyr::first(minNDonorsForGene)) 
+
+
+alleleStats.permute<-
+  lapply(1:1000,function(it) {
+  alleles_db %>%
+  filter(totalClonesCountForGene>50,
+         # ethnicity != "Unknown",
+         ethnicity %in% c("Caucasian","African"),
+         geneName %in% frequentVs) %>%
+  crossing(iteration=1:2 ) %>%
+      group_by(iteration,geneName) |> 
+  mutate(ethnicity = sample(ethnicity)) |>
+      ungroup() |> 
+  nest(.by = c(ethnicity,geneName,iteration)) %>% 
+  mutate(minNDonorsForGene=86) %>%
+  mutate(nAlleles=map2(data,minNDonorsForGene,~ .x %>% 
+                         filter(donor %in% (.x %>% 
+                                              select(donor) %>%
+                                              unique() %>% 
+                                              slice_sample(n=.y) %>%
+                                              pull(donor))) %>% 
+                         summarize(nAlleles=n_distinct(alleleName)) ) ) %>% 
+  select(-data)%>% 
+  unnest() %>% 
+  group_by(geneName,iteration) |> 
+      summarise(nAllelesDifAbs=max(nAlleles)-min(nAlleles)) |> 
+  left_join(alleleStats |> 
+              filter(ethnicity %in% c("Caucasian","African")) |> 
+              group_by(geneName) |> 
+              summarise(nAllelesDifAbs.real=max(nAlleles)-min(nAlleles)),by="geneName")  
+    
+      View()
+  group_by(ethnicity,geneName) %>% 
+  summarise(nAlleles=round(mean(nAlleles))) 
+  })
+
+
+permutationTest<-
+alleles_db %>%
+  filter(totalClonesCountForGene>50,
+         # ethnicity != "Unknown",
+         ethnicity %in% c("Caucasian","African"),
+         geneName %in% frequentVs) %>%
+  crossing(iteration=1:10000 ) %>%
+  group_by(iteration,geneName) |> 
+  mutate(ethnicity = sample(ethnicity)) |>
+  ungroup() |> 
+  nest(.by = c(ethnicity,geneName,iteration)) %>% 
+  mutate(minNDonorsForGene=86) %>%
+  mutate(nAlleles=map2(data,minNDonorsForGene,~ .x %>% 
+                         filter(donor %in% (.x %>% 
+                                              select(donor) %>%
+                                              unique() %>% 
+                                              slice_sample(n=.y) %>%
+                                              pull(donor))) %>% 
+                         summarize(nAlleles=n_distinct(alleleName)) ) ) %>% 
+  select(-data)%>% 
+  unnest() %>% 
+  group_by(geneName,iteration) |> 
+  summarise(nAllelesDifAbs.permut=max(nAlleles)-min(nAlleles)) |> 
+  left_join(alleleStats |> 
+              filter(ethnicity %in% c("Caucasian","African")) |> 
+              group_by(geneName) |> 
+              summarise(nAllelesDifAbs.real=max(nAlleles)-min(nAlleles)),by="geneName")  |> 
+  mutate(permutDifMore=nAllelesDifAbs.permut>=nAllelesDifAbs.real) |> 
+  ungroup() |> 
+  group_by(geneName) |> 
+  summarise(nWhenDifMore=sum(permutDifMore),
+            p.value=nWhenDifMore/max(iteration))
+
+permutationTest <- permutationTest |> mutate(p.adj=p.adjust(p.value,"fdr"))
+
+permutationTest |> write_tsv("~/paper_alleles/paper-alleles/permutationTest10K.tsv")
 
 #N alleles per ethnic group ----
 #TODO add permutation test
