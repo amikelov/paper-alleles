@@ -258,7 +258,7 @@ mkdir findAlleles
 
 ls *clns |parallel -j 46 --line-buffer \
   "/usr/bin/time -f '\t%e real,\t%U user,\t%S sys,\t%K avmem,\t%M maxmem' \
-  -o findAlleles/{.}.time.log mixcr findAlleles \
+  -o findAlleles/{.}.time.log mixcr findAlleles -f \
   -t 10 \
   --no-clns-output \
   --export-library findAlleles/{.}.fasta \
@@ -291,7 +291,18 @@ cp /home/amikelov/.mixcr/libraries/watsonlab_lib.v.fasta /usr/local/share/igblas
 cp /home/amikelov/.mixcr/libraries/watsonlab_lib.j.fasta /usr/local/share/igblast/fasta/imgt_human_ig_j.fasta
 cp /home/amikelov/.mixcr/libraries/watsonlab_lib.d.fasta /usr/local/share/igblast/fasta/imgt_human_ig_d.fasta
 
-realpath  *[2s].fasta | parallel -j 88 --line-buffer  'docker exec igb changeo-igblast -r /usr/local/share/germlines/imgt/human/vdj -s {} -n {} -p 3 -o /home/amikelov/paper_alleles/benchmarking/immcantation_fasta/igblast'
+makeblastdb -parse_seqids -dbtype nucl -in /usr/local/share/igblast/fasta/imgt_human_ig_v.fasta \
+    -out /usr/local/share/igblast/database/imgt_human_ig_v
+# D segment database
+
+makeblastdb -parse_seqids -dbtype nucl -in /usr/local/share/igblast/fasta/imgt_human_ig_d.fasta \
+    -out /usr/local/share/igblast/database/imgt_human_ig_d
+# J segment database
+
+makeblastdb -parse_seqids -dbtype nucl -in /usr/local/share/igblast/fasta/imgt_human_ig_j.fasta \
+    -out /usr/localshare/igblast/database/imgt_human_ig_j
+
+realpath  *[2s].fasta | parallel -j 88 --line-buffer  'docker exec igb changeo-igblast -r /usr/local/share/germlines/imgt/human/vdj -b /usr/local/share/igblast -s {} -n {} -p 3 -o /home/amikelov/paper_alleles/benchmarking/immcantation_fasta/igblast'
 ```
 
 ## Immcantation upstream downsampled data, minimal library
@@ -378,19 +389,19 @@ realpath *_collapse-unique.fastq* | parallel -j 4 --line-buffer  'docker run -v 
 #### Run IgBlast
 
 ```{bash}
-docker run --name igb -v /home/amikelov/:/home/amikelov/ -it immcantation/suite:4.4.0 /bin/bash
-mv /usr/local/share/germlines/imgt/human/vdj/imgt_human_IGHV.fasta /home/amikelov/paper_alleles/
-cp /home/amikelov/paper_alleles/watsonlab_IGH_VRegion_padded.fasta /usr/local/share/germlines/imgt/human/vdj/imgt_human_IGHV.fasta
-cp /home/amikelov/.mixcr/libraries/watsonlab_lib.v.fasta /usr/local/share/igblast/fasta/imgt_human_ig_v.fasta
-cp /home/amikelov/.mixcr/libraries/watsonlab_lib.j.fasta /usr/local/share/igblast/fasta/imgt_human_ig_j.fasta
-cp /home/amikelov/.mixcr/libraries/watsonlab_lib.d.fasta /usr/local/share/igblast/fasta/imgt_human_ig_d.fasta
-
-realpath *_collapse-unique.fastq | parallel -j 88 --line-buffer  'docker exec igb changeo-igblast -r /usr/local/share/germlines/imgt/human/vdj -s {} -n {} -p 3 -o /home/amikelov/paper_alleles/benchmarking/immcantation/downsampled/5race/igblast'
+# docker run --name igb -v /home/amikelov/:/home/amikelov/ -it immcantation/suite:4.4.0 /bin/bash
+# mv /usr/local/share/germlines/imgt/human/vdj/imgt_human_IGHV.fasta /home/amikelov/paper_alleles/
+# cp /home/amikelov/paper_alleles/watsonlab_IGH_VRegion_padded.fasta /usr/local/share/germlines/imgt/human/vdj/imgt_human_IGHV.fasta
+# cp /home/amikelov/.mixcr/libraries/watsonlab_lib.v.fasta /usr/local/share/igblast/fasta/imgt_human_ig_v.fasta
+# cp /home/amikelov/.mixcr/libraries/watsonlab_lib.j.fasta /usr/local/share/igblast/fasta/imgt_human_ig_j.fasta
+# cp /home/amikelov/.mixcr/libraries/watsonlab_lib.d.fasta /usr/local/share/igblast/fasta/imgt_human_ig_d.fasta
+# 
+# realpath *_collapse-unique.fastq | parallel -j 88 --line-buffer  'docker exec igb changeo-igblast -r /usr/local/share/germlines/imgt/human/vdj -s {} -n {} -p 3 -o /home/amikelov/paper_alleles/benchmarking/immcantation/downsampled/5race/igblast'
 ```
 
 ```{bash}
 
-realpath *_assemble-pass.fastq | parallel -j 88 --line-buffer  'docker exec igb changeo-igblast -r /usr/local/share/germlines/imgt/human/vdj -s {} -n {} -p 3 -o /home/amikelov/paper_alleles/benchmarking/immcantation/downsampled/noumi/igblast'
+# realpath *_assemble-pass.fastq | parallel -j 88 --line-buffer  'docker exec igb changeo-igblast -r /usr/local/share/germlines/imgt/human/vdj -s {} -n {} -p 3 -o /home/amikelov/paper_alleles/benchmarking/immcantation/downsampled/noumi/igblast'
 ```
 
 ### Data without UMI
@@ -408,11 +419,32 @@ realpath ~/paper_alleles/raw0/watson/downsampled/noumi/*_R1_*|parallel  -j 88  -
 #### Run IgBlast
 
 ```{bash}
+docker run --name igb -v /home/amikelov/:/home/amikelov/ -it immcantation/suite:4.4.0 /bin/bash
+mv /usr/local/share/germlines/imgt/human/vdj/imgt_human_IGHV.fasta /home/amikelov/paper_alleles/
+cp /home/amikelov/paper_alleles/watsonlab_IGH_VRegion_padded.fasta /usr/local/share/germlines/imgt/human/vdj/imgt_human_IGHV.fasta
+cp /home/amikelov/.mixcr/libraries/watsonlab_lib.v.fasta /usr/local/share/igblast/fasta/imgt_human_ig_v.fasta
+cp /home/amikelov/.mixcr/libraries/watsonlab_lib.j.fasta /usr/local/share/igblast/fasta/imgt_human_ig_j.fasta
+cp /home/amikelov/.mixcr/libraries/watsonlab_lib.d.fasta /usr/local/share/igblast/fasta/imgt_human_ig_d.fasta
 
-cd ~/paper_alleles/benchmarking/immcantation_fasta
-realpath *_assemble-pass.fastq | parallel -j 68 --line-buffer  'docker exec igb changeo-igblast -r /usr/local/share/germlines/imgt/human/vdj -s {} -n {= s::: =} -p 3 -o /home/amikelov/paper_alleles/benchmarking/immcantation/downsampled/noumi/igblast'
+makeblastdb -parse_seqids -dbtype nucl -in /usr/local/share/igblast/fasta/imgt_human_ig_v.fasta \
+    -out /usr/local/share/igblast/database/imgt_human_ig_v
+# D segment database
 
-cd
+makeblastdb -parse_seqids -dbtype nucl -in /usr/local/share/igblast/fasta/imgt_human_ig_d.fasta \
+    -out /usr/local/share/igblast/database/imgt_human_ig_d
+# J segment database
+
+makeblastdb -parse_seqids -dbtype nucl -in /usr/local/share/igblast/fasta/imgt_human_ig_j.fasta \
+    -out /usr/localshare/igblast/database/imgt_human_ig_j
+
+
+cd /home/amikelov/paper_alleles/benchmarking/immcantation/downsampled/5race
+realpath  *_collapse-unique.fastq | parallel -j 88 --line-buffer  'docker exec igb changeo-igblast -r /usr/local/share/germlines/imgt/human/vdj -b /usr/local/share/igblast -s {} -n {.} -p 3 -o /home/amikelov/paper_alleles/benchmarking/immcantation/downsampled/igblast'
+
+cd /home/amikelov/paper_alleles/benchmarking/immcantation/downsampled/noumi
+realpath  *_assemble-pass.fastq | parallel -j 88 --line-buffer  'docker exec igb changeo-igblast -r /usr/local/share/germlines/imgt/human/vdj -b /usr/local/share/igblast -s {} -n {.} -p 3 -o /home/amikelov/paper_alleles/benchmarking/immcantation/downsampled/igblast'
+
+
 ```
 
 ## TIgGER inference
@@ -725,10 +757,10 @@ ls *V*json |cut -f 1 -d "_" | parallel -j 10 --line-buffer 'echo {}; J=$(ls {}_*
 ```{bash}
 
 # 5'RACE
-parallel  --line-buffer  -j 30 'id=$(ls ../../../raw0/watson/5race/{}*R1* | cut -f 1-2 -d "_"|sed "s/.*\\///"); donor=$(echo $id|cut -d "_" -f 2);echo $id;echo $donor; mixcr -Xmx16g analyze generic-bcr-amplicon-umi  -f --species hs --library ${donor}_iGenotyper --rna --rigid-left-alignment-boundary --floating-right-alignment-boundary C --tag-pattern "^(R1:*) \ ^(UMI:N{"12"})GTACG{1:10}(R2:*)"   --assemble-clonotypes-by VDJRegion --split-clones-by C ../../../raw0/watson/5race/${id}_{{R}}.fastq  $id' ::: SRR23446568 SRR23446580 SRR23446567 SRR23446566 SRR23446585 SRR23446587 SRR23446564 SRR23446565 SRR23446588 SRR23446578 SRR23446563 SRR23446579 SRR23446569 SRR23446577 SRR23446571 SRR23446582 SRR23446576 SRR23446572 SRR23446573 SRR23446583 SRR23446574 SRR23446584 SRR23446589 SRR23446586 SRR23446581 SRR23446590 SRR23446575
-
-# Leader multiplex
-parallel --line-buffer  -j 4 'id=$(ls ../../raw/repseq/{}*R1* | cut -f 1-2 -d "_"|sed "s/.*\\///"); donor=$(echo $id|cut -d "_" -f 2);echo $id;echo $donor; mixcr -Xmx22g -V alleles analyze generic-bcr-amplicon  -f -Massemble.cloneAssemblerParameters.badQualityThreshold=-1 --species hs --library ${donor}_iGenotyper --rna --rigid-left-alignment-boundary --floating-right-alignment-boundary C --assemble-clonotypes-by VDJRegion --split-clones-by C ../../raw/repseq/${id}_{{R}}.fastq  $id' ::: SRR23654543 SRR23654534 SRR23654549 SRR23654586 SRR23654539 SRR23654573 SRR23654545 SRR23654542 SRR23654584 SRR23654561 SRR23654546 SRR23654560 SRR23654548 SRR23654577 SRR23654587 SRR23654583 SRR23654575 SRR23654552 SRR23654541 SRR23654582 SRR23654562 SRR23654553 SRR23654551 SRR23654558 SRR23654537 SRR23654557 SRR23654588 SRR23654576 SRR23654536 SRR23654563 SRR23654559 SRR23654550 SRR23654544 SRR23654533 SRR23654554 SRR23654547 SRR23654556 SRR23654565 SRR23654585 SRR23654535 SRR23654574 SRR23654555 SRR23654572 SRR23654540 SRR23654538
+# parallel  --line-buffer  -j 30 'id=$(ls ../../../raw0/watson/5race/{}*R1* | cut -f 1-2 -d "_"|sed "s/.*\\///"); donor=$(echo $id|cut -d "_" -f 2);echo $id;echo $donor; mixcr -Xmx16g analyze generic-bcr-amplicon-umi  -f --species hs --library ${donor}_iGenotyper --rna --rigid-left-alignment-boundary --floating-right-alignment-boundary C --tag-pattern "^(R1:*) \ ^(UMI:N{"12"})GTACG{1:10}(R2:*)"   --assemble-clonotypes-by VDJRegion --split-clones-by C ../../../raw0/watson/5race/${id}_{{R}}.fastq  $id' ::: SRR23446568 SRR23446580 SRR23446567 SRR23446566 SRR23446585 SRR23446587 SRR23446564 SRR23446565 SRR23446588 SRR23446578 SRR23446563 SRR23446579 SRR23446569 SRR23446577 SRR23446571 SRR23446582 SRR23446576 SRR23446572 SRR23446573 SRR23446583 SRR23446574 SRR23446584 SRR23446589 SRR23446586 SRR23446581 SRR23446590 SRR23446575
+# 
+# # Leader multiplex
+# parallel --line-buffer  -j 4 'id=$(ls ../../raw/repseq/{}*R1* | cut -f 1-2 -d "_"|sed "s/.*\\///"); donor=$(echo $id|cut -d "_" -f 2);echo $id;echo $donor; mixcr -Xmx22g -V alleles analyze generic-bcr-amplicon  -f -Massemble.cloneAssemblerParameters.badQualityThreshold=-1 --species hs --library ${donor}_iGenotyper --rna --rigid-left-alignment-boundary --floating-right-alignment-boundary C --assemble-clonotypes-by VDJRegion --split-clones-by C ../../raw/repseq/${id}_{{R}}.fastq  $id' ::: SRR23654543 SRR23654534 SRR23654549 SRR23654586 SRR23654539 SRR23654573 SRR23654545 SRR23654542 SRR23654584 SRR23654561 SRR23654546 SRR23654560 SRR23654548 SRR23654577 SRR23654587 SRR23654583 SRR23654575 SRR23654552 SRR23654541 SRR23654582 SRR23654562 SRR23654553 SRR23654551 SRR23654558 SRR23654537 SRR23654557 SRR23654588 SRR23654576 SRR23654536 SRR23654563 SRR23654559 SRR23654550 SRR23654544 SRR23654533 SRR23654554 SRR23654547 SRR23654556 SRR23654565 SRR23654585 SRR23654535 SRR23654574 SRR23654555 SRR23654572 SRR23654540 SRR23654538
 
 
 ls /home/amikelov/paper_alleles/raw0/watson/noumi/*R1.fastq | \
@@ -750,15 +782,13 @@ ls /home/amikelov/paper_alleles/raw0/watson/noumi/*R1.fastq | \
     {= s:.*/::;s:_R1.fastq:: =}'
 
 
-ls  /home/amikelov/paper_alleles/benchmarking/raw/repseq/5race/*R1*.fastq | parallel \
+ls  /home/amikelov/paper_alleles/raw0/watson/5race/*R1*.fastq | parallel \
     --line-buffer \
-    -S 3/bober0.milaboratories.com -S 3/bober1.milaboratories.com \
-    -S 3/bober2.milaboratories.com \
-    -S 3/candibober0.milaboratories.com \
+    -j 27 \
     'cd /home/amikelov/paper_alleles/benchmarking/igenotyper/mixcr;
      donor=$(echo {} |grep -E -o  "S?[WC]-[0-9]{1,3}");
     echo {}; echo $donor;
-    /software/mixcr/mixcr -Xmx22g analyze generic-bcr-amplicon-umi -f \
+    mixcr -Xmx22g analyze generic-bcr-amplicon-umi -f \
     --species hs --rna \
     --rigid-left-alignment-boundary \
     --floating-right-alignment-boundary C \
@@ -867,10 +897,13 @@ igenotyper_seq %<>%
 
 ```{r}
 tiggerStats<-
-  dir("~/paper_alleles/benchmarking/immcantation",
+  dir("~/paper_alleles/benchmarking/immcantation_fasta",
     pattern = "_db-pass.tsv",
     full.names = T) %>% 
-  c(dir("~/paper_alleles/benchmarking/immcantation/downsampled",
+  c(dir("~/paper_alleles/benchmarking/immcantation/downsampled/noumi",
+    pattern = "_db-pass.tsv",
+    full.names = T),
+    dir("~/paper_alleles/benchmarking/immcantation/downsampled/5race",
     pattern = "_db-pass.tsv",
     full.names = T)) %>% 
   lapply(function(flnm){
@@ -899,12 +932,10 @@ write_tsv(tiggerStats,"~/paper_alleles/benchmarking/tiggerClonesetStatsByV.tsv")
 
 ```{r}
 mixcrStats<-
-  c(dir("~/paper_alleles/benchmarking/mixcr",
+  dir("~/paper_alleles/benchmarking/mixcr",
     pattern = ".clones_IGH.tsv",
-    full.names = T),
-  dir("~/paper_alleles/benchmarking/mixcr_downsampled",
-    pattern = ".clones_IGH.tsv",
-    full.names = T)) %>%  
+    full.names = T,
+    recursive = T) |> 
   lapply(function(flnm){
     db<-read_tsv(flnm) %>% 
       separate_rows(allVHitsWithScore,sep=",") %>% 
@@ -932,12 +963,18 @@ stats<- read_tsv("~/paper_alleles/benchmarking/mixcr_stats.tsv") %>%
 
 ```{r}
 # Read in tsv output of MiXCR findAlleles  ----
-mixcr_allele_files<-c(dir("~/paper_alleles/benchmarking/mixcr",
-                        pattern = "[noumi|5race].tsv",
-                        full.names = T),
-                      dir("~/paper_alleles/benchmarking/mixcr_downsampled",
-                        pattern = "[noumi|5race].tsv",
-                        full.names = T))
+mixcr_allele_files<-c(dir("~/paper_alleles/benchmarking/mixcr/noumi/findAlleles",
+                          pattern = ".tsv",
+                          full.names = T),
+                     dir("~/paper_alleles/benchmarking/mixcr/5race/findAlleles",
+                          pattern = ".tsv",
+                          full.names = T),
+                     dir("~/paper_alleles/benchmarking/mixcr/downsampled/noumi/findAlleles",
+                          pattern = ".tsv",
+                          full.names = T),
+                     dir("~/paper_alleles/benchmarking/mixcr/downsampled/5race/findAlleles",
+                          pattern = ".tsv",
+                          full.names = T))
 
 alleles_mixcr<-read_tsv(mixcr_allele_files,id="fileName") %>% 
   filter(str_detect(geneName,"IGHV|IGHJ")) %>% 
@@ -952,22 +989,28 @@ alleles_mixcr<-read_tsv(mixcr_allele_files,id="fileName") %>%
 ## Read in allele sequences from comparison tools
 
 ```{r}
-fastaFromMixcr<-c(dir("~/paper_alleles/benchmarking/mixcr",
-                    pattern="mixcr.fasta",
-                    full.names = T),
-   dir("~/paper_alleles/benchmarking/mixcr_downsampled",
-       pattern="mixcr.fasta",
-       full.names = T))
+fastaFromMixcr<-c(dir("~/paper_alleles/benchmarking/mixcr/noumi/findAlleles",
+                          pattern = ".fasta",
+                          full.names = T),
+                     dir("~/paper_alleles/benchmarking/mixcr/5race/findAlleles",
+                          pattern = ".fasta",
+                          full.names = T),
+                     dir("~/paper_alleles/benchmarking/mixcr/downsampled/noumi/findAlleles",
+                          pattern = ".fasta",
+                          full.names = T),
+                     dir("~/paper_alleles/benchmarking/mixcr/downsampled/5race/findAlleles",
+                          pattern = ".fasta",
+                          full.names = T))
   # dir("~/paper_alleles/benchmarking/mixcr/noumi/downsampled",
   #   pattern="mixcr.fasta",
   #   full.names = T))
   
   
 fastaFromTigger<-c(
-  dir("~/paper_alleles/benchmarking/immcantation/tigger",
+  dir("~/paper_alleles/benchmarking/immcantation_fasta/tigger",
       pattern = "tigger.fasta",
       full.names=T),
- dir("~/paper_alleles/benchmarking/immcantation/tigger/downsampled",
+ dir("~/paper_alleles/benchmarking/immcantation/tigger",
      pattern = "tigger.fasta",
     full.names=T))
 
@@ -985,14 +1028,24 @@ all_alleles<-lapply(alleleFastas,function(fasta){
                            id = str_remove_all(fasta,".*/|.fasta|_db-pass"),
                            donor = str_extract(id, "(SC|W)-[0-9]{1,3}") %>%
                              str_remove("_.*"),
-                           tool=str_remove(id,".*\\."),
-                           depth=str_extract(fasta,"10K|50K|100K|500K"))%>%           
+                           tool = str_extract(fasta,"tigger|mixcr"), 
+                           depth = str_extract(fasta,"10K|25K|50K|100K|500K"))%>%           
     mutate(depth=ifelse(is.na(depth),"full",depth)) %>% 
     dplyr::filter(str_detect(alleleName,"IGHV|IGHJ")) %>% 
     mutate(geneName=str_remove(alleleName,"\\*.*")) %>% 
     relocate(id:geneName, .before=alleleName) %>% 
     unique()
 })
+
+protocol_donor<-tibble(
+  donor=c(dir("~/paper_alleles/raw0/watson/5race",
+              pattern="*_R1.fastq"),
+          dir("~/paper_alleles/raw0/watson/noumi",
+              pattern="*_R1.fastq")) |> 
+    str_extract( "(SC|W)-[0-9]{1,3}") |>
+    str_remove("_.*"),
+  protocol=c(rep("5race",27),rep("noumi",46))
+)
 
 all_alleles<-all_alleles[sapply(all_alleles,nrow)!=0] %>% 
   bind_rows()  %>%  #add info on protocol and CDR3 reliable border
@@ -1015,8 +1068,7 @@ all_alleles<-all_alleles[sapply(all_alleles,nrow)!=0] %>%
 ) %>%
   rename(trimSeqBy=trimSeqBy.x) %>% 
   mutate(trimSeqBy=ifelse(is.na(trimSeqBy) & tool=="tigger",trimSeqBy.y,trimSeqBy)) %>% 
-  left_join(read_tsv("~/paper_alleles/benchmarking/raw/repseq_meta.tsv") %>% 
-            select(donor,protocol),
+  left_join(protocol_donor,
             by="donor")
   
 ```
@@ -1109,8 +1161,7 @@ alleleComparison %<>%
            alleleSeq.iGenotyper,alleleSeq.tool,
            nClonesTotalInGene) %>%
   #add info on protocol
-  left_join(read_tsv("~/paper_alleles/benchmarking/raw/repseq_meta.tsv") %>% 
-              select(donor,protocol),
+  left_join(protocol_donor,
             by="donor")
 
 
