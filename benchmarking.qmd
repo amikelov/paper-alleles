@@ -464,8 +464,8 @@ tigger_pipeline<-function(filenames,out_folder,germlineDb){
     extract_id<- function(x) str_remove_all(x,".*/*.*/|\\.tsv")
     id<-extract_id(filenames)
     
-   benchm <- bench::mark(
-      {
+   # benchm <- bench::mark(
+   #    {
         tigger_db <- read_tsv(filenames,show_col_types = FALSE) |> 
         mutate(v_call=str_remove(v_call,",.*"))
     
@@ -478,8 +478,8 @@ tigger_pipeline<-function(filenames,out_folder,germlineDb){
 
     genotype<-genotypeFasta(allele_db,germline_db=germlineDb,novel=novel_db)
     writeFasta(named_sequences = genotype,out_folder %+% str_replace(id,"_airr","") %+% ".tigger.fasta")
-    }
-    )
+   # }
+    #)
     
     allele_db<-allele_db%>%
       mutate(countInAlleles=str_split(counts,",",simplify = F) %>% 
@@ -489,7 +489,7 @@ tigger_pipeline<-function(filenames,out_folder,germlineDb){
              fractionInAlleles=countInAlleles/total)
     
     write_tsv(allele_db, out_folder %+% id %+% "_tigger.tsv")
-    return(benchm |> select(total_time,mem_alloc))
+   # return(benchm |> select(total_time,mem_alloc))
   }, error= function(e) paste(filenames,e,sep=":" ) )
 }
 ```
@@ -916,7 +916,7 @@ tiggerStats<-
                 nClones=n()) %>%
       mutate(fileName=flnm,
              donor=str_extract(flnm,"(SC|W)-[0-9]{1,3}"),
-             depth=str_extract(flnm,"10K|50K|100K|500K"))
+             depth=str_extract(flnm,"10K|25K|50K|100K|500K"))
   }) %>% bind_rows() %>% 
   replace_na(list(depth="full")) %>% 
   complete(depth,nesting(donor,geneName),fill = list(nClones=0)) %>% 
@@ -937,13 +937,13 @@ mixcrStats<-
     full.names = T,
     recursive = T) |> 
   lapply(function(flnm){
-    db<-read_tsv(flnm) %>% 
+    db<-read_tsv(flnm,show_col_types = F) %>% 
       separate_rows(allVHitsWithScore,sep=",") %>% 
       mutate(geneName=str_remove(allVHitsWithScore,"\\*.*")) %>% group_by(geneName) %>%
       summarise(nClones=n()) %>%
       mutate(fileName=flnm,
              donor=str_extract(flnm,"(SC|W)-[0-9]{1,3}"),
-             depth=str_extract(flnm,"10K|50K|100K|500K"))
+             depth=str_extract(flnm,"10K|25K|50K|100K|500K"))
   }) %>% bind_rows() %>% 
   replace_na(list(depth="full")) %>% 
   complete(depth,nesting(donor,geneName),fill = list(nClones=0)) %>% 
@@ -1408,7 +1408,7 @@ comparisonStats<-
   ungroup() %>% 
   mutate(
     donor= factor(donor,levels= unique(donor)),
-    depth=factor(depth,levels=c("full", "500K","100K","50K","10K")),
+    depth=factor(depth,levels=c("full", "500K","100K","50K","25K","10K")),
     tool=factor(tool,levels=c('mixcr','tigger'))
   ) %>% 
   complete(matchStatus,depth,donor,tool,fill=list(N=0)) %>% 
@@ -1416,9 +1416,7 @@ comparisonStats<-
   mutate(nAllelesTotal=sum(N[matchStatus=="match" | matchStatus== "falseNegative"])) %>% 
   mutate(fraction=N/nAllelesTotal) %>% 
   left_join(stats %>% select(donor,totalReads:readsUsedInClonotypes)) %>%
-    left_join(read_tsv("~/paper_alleles/benchmarking/raw/repseq_meta.tsv") %>% 
-              select(donor,protocol),
-            by="donor") %>% 
+    left_join(protocol_donor) %>% 
   replace_na(list(fraction=0))
 
 give.n <- function(y){
@@ -1437,7 +1435,7 @@ fig1d<-comparisonStats  %>%
     totalClonotypes>3000,
     matchStatus %in% c("match")) %>% 
   mutate(matchStatus=factor(matchStatus,levels=c("falseNegative","match","falsePositive")),
-         depth=factor(depth,levels=c("full", "500K","100K","50K","10K"))) %>% 
+         depth=factor(depth,levels=c("full", "500K","100K","50K", "25K","10K"))) %>% 
   ggplot(aes(y=fraction,x=depth,fill=tool))+
   geom_boxplot(outlier.shape = NA,position = position_dodge2(preserve = "single"))+
   facet_wrap(  ~ matchStatus,
@@ -1477,7 +1475,7 @@ fig1e<-comparisonStats  %>%
     totalClonotypes>3000,
     matchStatus %in% c("falsePositive")) %>% 
   mutate(matchStatus=factor(matchStatus,levels=c("falseNegative","match","falsePositive")),
-         depth=factor(depth,levels=c("full", "500K","100K","50K","10K"))) %>% 
+         depth=factor(depth,levels=c("full", "500K","100K","50K", "25K","10K"))) %>% 
   ggplot(aes(y=N,x=depth,fill=tool))+
   geom_boxplot(outlier.shape = NA,position = position_dodge2(preserve = "single"))+
   facet_wrap(  ~ matchStatus,
