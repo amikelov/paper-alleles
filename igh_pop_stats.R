@@ -324,6 +324,83 @@ novelAllelesStats<-alleles_db %>%
             nNovelPerDonors=nNovel/first(nDonorsEthnicity)) %>% 
   mutate(ypos=ifelse(geneType=="V",-0.1,-0.002))
 
+
+#N novel alleles permutation test ----
+donors_ethnicities<-alleles_db |> 
+  select(donor,ethnicity) |> 
+  unique()
+
+ethnicities <- alleles_db |> 
+  pull(ethnicity) |> 
+  unique() 
+
+novelPermTest<-lapply(1:10000, function(it) {
+  ethnicities_reshuffled <- donors_ethnicities |> mutate(ethnicity=sample(ethnicity))
+  
+  novelPermutedDb <- alleles_db %>%
+    select(-ethnicity) |> 
+    left_join(ethnicities_reshuffled, by= "donor") |> 
+    group_by(ethnicity) %>% 
+    mutate(nDonorsEthnicity=n_distinct(donor),
+           geneType=ifelse(str_detect(alleleName,"IGHV"),"V","J") %>% factor(levels=c("V","J"))) %>% 
+    filter(alleleName %in% novelAlleles ) %>%
+    group_by(ethnicity,geneType) %>% 
+    summarise(nNovel=n_distinct(alleleName),
+              nNovelPerDonors=nNovel/first(nDonorsEthnicity)) 
+  
+  crossing(ethn1=ethnicities,ethn2=ethnicities) |> 
+    filter(ethn1 < ethn2) |> 
+    left_join(novelPermutedDb, by= c( "ethn1" = "ethnicity") ) |> 
+    left_join(novelPermutedDb, by= c( "ethn2" = "ethnicity") ) |> 
+    mutate(nNovelPerDonorsDiff=abs(nNovelPerDonors.x-nNovelPerDonors.y),
+           iteration = it)
+  
+}) |> bind_rows()
+
+novelPermTest |> 
+  left_join(
+    crossing(ethn1=ethnicities,ethn2=ethnicities) |> 
+      filter(ethn1 < ethn2) |> 
+      left_join(novelAllelesStats, by= c( "ethn1" = "ethnicity") ) |> 
+      left_join(novelAllelesStats, by= c( "ethn2" = "ethnicity") ) |> 
+      mutate(nNovelPerDonorsDiff=abs(nNovelPerDonors.x-nNovelPerDonors.y)),
+    by=c("ethn1","ethn2")) |> 
+  mutate(diffMoreInPermuted=nNovelPerDonorsDiff.x>=nNovelPerDonorsDiff.y) |> 
+  group_by(ethn1,ethn2) |> 
+  summarise(p=sum(diffMoreInPermuted/max(iteration)))
+
+
+
+alleles_db %>%
+  group_by(ethnicity) %>% 
+  mutate(nDonorsEthnicity=n_distinct(donor),
+         geneType=ifelse(str_detect(alleleName,"IGHV"),"V","J") %>% factor(levels=c("V","J"))) %>% 
+  crossing(iteration=1:4) %>%
+  nest(.by = c(ethnicity,iteration)) %>% 
+  mutate(minNDonorsForGene=86) %>%
+  mutate(minNDonorsForGene=86) %>%
+  mutate(nAlleles=map2(data,minNDonorsForGene,~ .x %>% 
+                         filter(donor %in% (.x %>% 
+                                              select(donor) %>%
+                                              unique() %>% 
+                                              slice_sample(n=.y) %>%
+                                              pull(donor))) %>% 
+                         summarize(nAlleles=n_distinct(alleleName)) ) ) %>% 
+  select(-data)%>% 
+  unnest() %>% 
+  group_by(geneName,iteration) |> 
+  summarise(nAllelesDifAbs.permut=max(nAlleles)-min(nAlleles)) |> 
+  left_join(alleleStats |> 
+              filter(ethnicity %in% c("Caucasian","African")) |> 
+              group_by(geneName) |> 
+              summarise(nAllelesDifAbs.real=max(nAlleles)-min(nAlleles)),by="geneName")  |> 
+  mutate(permutDifMore=nAllelesDifAbs.permut>=nAllelesDifAbs.real) |> 
+  ungroup() |> 
+  group_by(geneName) |> 
+  summarise(nWhenDifMore=sum(permutDifMore),
+            p.value=nWhenDifMore/max(iteration))
+
+
 ## Fig 3B N Novel p/ Ethnicity ----
 fig3b<-novelAllelesStats %>% 
   mutate(ethnicity=factor(ethnicity,
@@ -393,41 +470,41 @@ alleleStats<-alleles_db %>%
   summarise(nAlleles=round(mean(nAlleles)),minNDonorsForGene=dplyr::first(minNDonorsForGene)) 
 
 
-alleleStats.permute<-
-  lapply(1:1000,function(it) {
-  alleles_db %>%
-  filter(totalClonesCountForGene>50,
-         # ethnicity != "Unknown",
-         ethnicity %in% c("Caucasian","African"),
-         geneName %in% frequentVs) %>%
-  crossing(iteration=1:2 ) %>%
-      group_by(iteration,geneName) |> 
-  mutate(ethnicity = sample(ethnicity)) |>
-      ungroup() |> 
-  nest(.by = c(ethnicity,geneName,iteration)) %>% 
-  mutate(minNDonorsForGene=86) %>%
-  mutate(nAlleles=map2(data,minNDonorsForGene,~ .x %>% 
-                         filter(donor %in% (.x %>% 
-                                              select(donor) %>%
-                                              unique() %>% 
-                                              slice_sample(n=.y) %>%
-                                              pull(donor))) %>% 
-                         summarize(nAlleles=n_distinct(alleleName)) ) ) %>% 
-  select(-data)%>% 
-  unnest() %>% 
-  group_by(geneName,iteration) |> 
-      summarise(nAllelesDifAbs=max(nAlleles)-min(nAlleles)) |> 
-  left_join(alleleStats |> 
-              filter(ethnicity %in% c("Caucasian","African")) |> 
-              group_by(geneName) |> 
-              summarise(nAllelesDifAbs.real=max(nAlleles)-min(nAlleles)),by="geneName")  
-    
-      View()
-  group_by(ethnicity,geneName) %>% 
-  summarise(nAlleles=round(mean(nAlleles))) 
-  })
+# alleleStats.permute<-
+#   lapply(1:1000,function(it) {
+#   alleles_db %>%
+#   filter(totalClonesCountForGene>50,
+#          # ethnicity != "Unknown",
+#          ethnicity %in% c("Caucasian","African"),
+#          geneName %in% frequentVs) %>%
+#   crossing(iteration=1:2 ) %>%
+#       group_by(iteration,geneName) |> 
+#   mutate(ethnicity = sample(ethnicity)) |>
+#       ungroup() |> 
+#   nest(.by = c(ethnicity,geneName,iteration)) %>% 
+#   mutate(minNDonorsForGene=86) %>%
+#   mutate(nAlleles=map2(data,minNDonorsForGene,~ .x %>% 
+#                          filter(donor %in% (.x %>% 
+#                                               select(donor) %>%
+#                                               unique() %>% 
+#                                               slice_sample(n=.y) %>%
+#                                               pull(donor))) %>% 
+#                          summarize(nAlleles=n_distinct(alleleName)) ) ) %>% 
+#   select(-data)%>% 
+#   unnest() %>% 
+#   group_by(geneName,iteration) |> 
+#       summarise(nAllelesDifAbs=max(nAlleles)-min(nAlleles)) |> 
+#   left_join(alleleStats |> 
+#               filter(ethnicity %in% c("Caucasian","African")) |> 
+#               group_by(geneName) |> 
+#               summarise(nAllelesDifAbs.real=max(nAlleles)-min(nAlleles)),by="geneName")  
+#     
+#       View()
+#   group_by(ethnicity,geneName) %>% 
+#   summarise(nAlleles=round(mean(nAlleles))) 
+#   })
 
-
+# N alleles permutation test ----
 permutationTest<-
 alleles_db %>%
   filter(totalClonesCountForGene>50,
