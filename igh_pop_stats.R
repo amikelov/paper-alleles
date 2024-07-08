@@ -8,6 +8,8 @@
   library(circlize)
   library(conflicted)
   library(dplyr)
+  library(tidyr)
+  library(stringr)
   library(scales)
   library(ggpubr)
   library(forcats)
@@ -114,7 +116,7 @@ fig3a<-waffle::waffle(cohortDemographics %>%
                       rows=13,
                       colors=c("#A2F66C","#FFF780","#5DDDA4",
                                "#942AAE","#D3D7E0"))+
-  theme(legend.text=element_text(size=12),
+  theme(legend.text=element_text(size=14),
         plot.margin = unit(c(0.4,0.6,1,1), "cm"))
 
 
@@ -352,6 +354,7 @@ novelPermTest<-lapply(1:10000, function(it) {
     filter(ethn1 < ethn2) |> 
     left_join(novelPermutedDb, by= c( "ethn1" = "ethnicity") ) |> 
     left_join(novelPermutedDb, by= c( "ethn2" = "ethnicity") ) |> 
+    replace_na(replace = list(nNovelPerDonors.x=0, nNovelPerDonors.y=0)) |> 
     mutate(nNovelPerDonorsDiff=abs(nNovelPerDonors.x-nNovelPerDonors.y),
            iteration = it)
   
@@ -371,35 +374,6 @@ novelPermTest |>
 
 
 
-alleles_db %>%
-  group_by(ethnicity) %>% 
-  mutate(nDonorsEthnicity=n_distinct(donor),
-         geneType=ifelse(str_detect(alleleName,"IGHV"),"V","J") %>% factor(levels=c("V","J"))) %>% 
-  crossing(iteration=1:4) %>%
-  nest(.by = c(ethnicity,iteration)) %>% 
-  mutate(minNDonorsForGene=86) %>%
-  mutate(minNDonorsForGene=86) %>%
-  mutate(nAlleles=map2(data,minNDonorsForGene,~ .x %>% 
-                         filter(donor %in% (.x %>% 
-                                              select(donor) %>%
-                                              unique() %>% 
-                                              slice_sample(n=.y) %>%
-                                              pull(donor))) %>% 
-                         summarize(nAlleles=n_distinct(alleleName)) ) ) %>% 
-  select(-data)%>% 
-  unnest() %>% 
-  group_by(geneName,iteration) |> 
-  summarise(nAllelesDifAbs.permut=max(nAlleles)-min(nAlleles)) |> 
-  left_join(alleleStats |> 
-              filter(ethnicity %in% c("Caucasian","African")) |> 
-              group_by(geneName) |> 
-              summarise(nAllelesDifAbs.real=max(nAlleles)-min(nAlleles)),by="geneName")  |> 
-  mutate(permutDifMore=nAllelesDifAbs.permut>=nAllelesDifAbs.real) |> 
-  ungroup() |> 
-  group_by(geneName) |> 
-  summarise(nWhenDifMore=sum(permutDifMore),
-            p.value=nWhenDifMore/max(iteration))
-
 
 ## Fig 3B N Novel p/ Ethnicity ----
 fig3b<-novelAllelesStats %>% 
@@ -411,14 +385,6 @@ fig3b<-novelAllelesStats %>%
                                    "Hispanic/Latino"))
   ) %>% 
   ggplot(aes(x=ethnicity,fill=ethnicity,y=nNovelPerDonors))+
-  # geom_text(aes(x = ethnicity,
-  #               label = nNovel,
-  #               group = ethnicity,
-  #               y=ypos),
-  #           
-  #   position = position_dodge(width = 1),
-  # size = 3
-  # ) +
   geom_bar(stat="identity",position = position_dodge(),
            color="grey38",linewidth=0.15)+
   theme_bw()+
@@ -433,9 +399,74 @@ fig3b<-novelAllelesStats %>%
              labeller=labeller(geneType=c(V="IGHV Genes",J="IGHJ Genes")))+
   labs(x= "Ethnicity",y="# Novel Alleles Per Donor")+
   theme(legend.position = "none",
-        strip.background =element_rect(fill="white"),
+        strip.background = element_rect(fill="white"),
         axis.title.x = element_blank(),
-        plot.margin = unit(c(3,5.5,6.5,6.5), "points"))
+        plot.margin = unit(c(3,5.5,6.5,6.5), "points"),
+        axis.title.y = element_text(size=14),     # Increase y-axis title font size
+        axis.text.x = element_text(size=12),      # Increase x-axis labels font size
+        axis.text.y = element_text(size=12),      # Increase y-axis labels font size
+        strip.text = element_text(size=14))       # Increase facet labels font size
+
+
+
+
+
+#N alleles Per donor for all Genes ----
+totalPerDonorPerGeneAllelesStats<-alleles_db %>%
+  group_by(ethnicity) %>% 
+  mutate(nDonorsEthnicity=n_distinct(donor),
+         geneType=ifelse(str_detect(alleleName,"IGHV"),"V","J") %>% factor(levels=c("V","J"))) %>% 
+  group_by(ethnicity,geneName) %>% 
+  summarise(nAlleles=n_distinct(alleleName),
+            nAllelesPerDonor=nAlleles/first(nDonorsEthnicity)) 
+
+#N alleles per Donor per gene permutation test ----
+genes<-alleles_db %>%
+  filter(totalClonesCountForGene>50,
+         (geneName %in% frequentVs) | str_detect(alleleName,"IGHJ")) |> 
+  pull(geneName) |> 
+  unique()
+  
+totalPerDonorPerGenePermTest<-lapply(1:100, function(it) {
+  ethnicities_reshuffled <- donors_ethnicities |> mutate(ethnicity=sample(ethnicity))
+  
+  totalPermutedDb <- alleles_db %>%
+    select(-ethnicity) |> 
+    left_join(ethnicities_reshuffled, by= "donor") |> 
+    group_by(ethnicity) %>% 
+    mutate(nDonorsEthnicity=n_distinct(donor),
+           geneType=ifelse(str_detect(alleleName,"IGHV"),"V","J") %>% factor(levels=c("V","J"))) %>% 
+    group_by(ethnicity,geneName) %>% 
+    summarise(nAlleles=n_distinct(alleleName),
+              nAllelesPerDonor=nAlleles/first(nDonorsEthnicity)) 
+  
+  crossing(ethn1=ethnicities,ethn2=ethnicities,geneName=genes) |> 
+    filter(ethn1 < ethn2) |> 
+    left_join(totalPermutedDb, by= c( "ethn1" = "ethnicity", "geneName") ) |> 
+    left_join(totalPermutedDb, by= c( "ethn2" = "ethnicity", "geneName") ) |> 
+    replace_na(replace = list(nAllelesPerDonor.x=0, nAllelesPerDonor.y=0)) |> 
+    mutate(nTotalPerDonorsDiff=abs(nAllelesPerDonor.x-nAllelesPerDonor.y),
+           iteration = it)
+  
+}) |> bind_rows()
+
+
+
+totalPerDonorPerGenePermTest |> 
+  left_join(
+    crossing(ethn1=ethnicities,ethn2=ethnicities,geneName=genes) |> 
+      filter(ethn1 < ethn2) |> 
+      left_join(totalPerDonorPerGeneAllelesStats, by= c( "ethn1" = "ethnicity", "geneName") ) |> 
+      left_join(totalPerDonorPerGeneAllelesStats, by= c( "ethn2" = "ethnicity", "geneName") ) |> 
+      replace_na(replace = list(nAllelesPerDonor.x=0, nAllelesPerDonor.y=0)) |> 
+      mutate(nTotalPerDonorsDiff=abs(nAllelesPerDonor.x-nAllelesPerDonor.y)),
+    by=c("ethn1","ethn2", "geneName")) |> 
+  mutate(diffMoreInPermuted=nTotalPerDonorsDiff.x>=nTotalPerDonorsDiff.y) |> 
+  group_by(ethn1,ethn2,geneName) |> 
+  summarise(p=sum(diffMoreInPermuted/max(iteration))) |> 
+  ungroup() |> 
+  mutate(p.adj=p.adjust(p,"fdr")) |> View()
+
 
 
 
@@ -450,59 +481,25 @@ alleleStats<-alleles_db %>%
       filter(totalClonesCountForGene>50,
              geneName %in% frequentVs) %>%
       mutate(ethnicity="All")
-  ) %>%  
-  nest(.by = c(ethnicity,geneName)) %>% 
-  #mutate(nDonors=map_int(data,~ .x %>% summarize(nDonor=n_distinct(donor)) %>% pull(nDonor))) %>% 
+  ) %>%
+  nest(.by = c(ethnicity,geneName)) %>%
+  #mutate(nDonors=map_int(data,~ .x %>% summarize(nDonor=n_distinct(donor)) %>% pull(nDonor))) %>%
   #group_by(geneName)%>%
-  #now 
-  mutate(minNDonorsForGene=86) %>%
+  #now
+  mutate(minNDonorsForGene=92) %>%
   crossing(iteration=1:10 ) %>%
-  mutate(nAlleles=map2(data,minNDonorsForGene,~ .x %>% 
-                         filter(donor %in% (.x %>% 
+  mutate(nAlleles=map2(data,minNDonorsForGene,~ .x %>%
+                         filter(donor %in% (.x %>%
                                               select(donor) %>%
-                                              unique() %>% 
+                                              unique() %>%
                                               slice_sample(n=.y) %>%
-                                              pull(donor))) %>% 
-                         summarize(nAlleles=n_distinct(alleleName)) ) ) %>% 
-  select(-data)%>% 
-  unnest() %>% 
-  group_by(ethnicity,geneName) %>% 
-  summarise(nAlleles=round(mean(nAlleles)),minNDonorsForGene=dplyr::first(minNDonorsForGene)) 
+                                              pull(donor))) %>%
+                         summarize(nAlleles=n_distinct(alleleName)) ) ) %>%
+  select(-data)%>%
+  unnest() %>%
+  group_by(ethnicity,geneName) %>%
+  summarise(nAlleles=round(mean(nAlleles)),minNDonorsForGene=dplyr::first(minNDonorsForGene))
 
-
-# alleleStats.permute<-
-#   lapply(1:1000,function(it) {
-#   alleles_db %>%
-#   filter(totalClonesCountForGene>50,
-#          # ethnicity != "Unknown",
-#          ethnicity %in% c("Caucasian","African"),
-#          geneName %in% frequentVs) %>%
-#   crossing(iteration=1:2 ) %>%
-#       group_by(iteration,geneName) |> 
-#   mutate(ethnicity = sample(ethnicity)) |>
-#       ungroup() |> 
-#   nest(.by = c(ethnicity,geneName,iteration)) %>% 
-#   mutate(minNDonorsForGene=86) %>%
-#   mutate(nAlleles=map2(data,minNDonorsForGene,~ .x %>% 
-#                          filter(donor %in% (.x %>% 
-#                                               select(donor) %>%
-#                                               unique() %>% 
-#                                               slice_sample(n=.y) %>%
-#                                               pull(donor))) %>% 
-#                          summarize(nAlleles=n_distinct(alleleName)) ) ) %>% 
-#   select(-data)%>% 
-#   unnest() %>% 
-#   group_by(geneName,iteration) |> 
-#       summarise(nAllelesDifAbs=max(nAlleles)-min(nAlleles)) |> 
-#   left_join(alleleStats |> 
-#               filter(ethnicity %in% c("Caucasian","African")) |> 
-#               group_by(geneName) |> 
-#               summarise(nAllelesDifAbs.real=max(nAlleles)-min(nAlleles)),by="geneName")  
-#     
-#       View()
-#   group_by(ethnicity,geneName) %>% 
-#   summarise(nAlleles=round(mean(nAlleles))) 
-#   })
 
 # N alleles permutation test ----
 permutationTest<-
@@ -511,36 +508,36 @@ alleles_db %>%
          # ethnicity != "Unknown",
          ethnicity %in% c("Caucasian","African"),
          geneName %in% frequentVs) %>%
-  crossing(iteration=1:10000 ) %>%
-  group_by(iteration,geneName) |> 
+  crossing(iteration=1:1000 ) %>%
+  group_by(iteration,geneName) |>
   mutate(ethnicity = sample(ethnicity)) |>
-  ungroup() |> 
-  nest(.by = c(ethnicity,geneName,iteration)) %>% 
-  mutate(minNDonorsForGene=86) %>%
-  mutate(nAlleles=map2(data,minNDonorsForGene,~ .x %>% 
-                         filter(donor %in% (.x %>% 
+  ungroup() |>
+  nest(.by = c(ethnicity,geneName,iteration)) %>%
+  mutate(minNDonorsForGene=92) %>%
+  mutate(nAlleles=map2(data,minNDonorsForGene,~ .x %>%
+                         filter(donor %in% (.x %>%
                                               select(donor) %>%
-                                              unique() %>% 
+                                              unique() %>%
                                               slice_sample(n=.y) %>%
-                                              pull(donor))) %>% 
-                         summarize(nAlleles=n_distinct(alleleName)) ) ) %>% 
-  select(-data)%>% 
-  unnest() %>% 
-  group_by(geneName,iteration) |> 
-  summarise(nAllelesDifAbs.permut=max(nAlleles)-min(nAlleles)) |> 
-  left_join(alleleStats |> 
-              filter(ethnicity %in% c("Caucasian","African")) |> 
-              group_by(geneName) |> 
-              summarise(nAllelesDifAbs.real=max(nAlleles)-min(nAlleles)),by="geneName")  |> 
-  mutate(permutDifMore=nAllelesDifAbs.permut>=nAllelesDifAbs.real) |> 
-  ungroup() |> 
-  group_by(geneName) |> 
+                                              pull(donor))) %>%
+                         summarize(nAlleles=n_distinct(alleleName)) ) ) %>%
+  select(-data)%>%
+  unnest() %>%
+  group_by(geneName,iteration) |>
+  summarise(nAllelesDifAbs.permut=max(nAlleles)-min(nAlleles)) |>
+  left_join(alleleStats |>
+              filter(ethnicity %in% c("Caucasian","African")) |>
+              group_by(geneName) |>
+              summarise(nAllelesDifAbs.real=max(nAlleles)-min(nAlleles)),by="geneName")  |>
+  mutate(permutDifMore=nAllelesDifAbs.permut>=nAllelesDifAbs.real) |>
+  ungroup() |>
+  group_by(geneName) |>
   summarise(nWhenDifMore=sum(permutDifMore),
             p.value=nWhenDifMore/max(iteration))
 
 permutationTest <- permutationTest |> mutate(p.adj=p.adjust(p.value,"fdr"))
 
-permutationTest |> write_tsv("~/paper_alleles/paper-alleles/permutationTest10K.tsv")
+permutationTest |> write_tsv("~/paper_alleles/paper-alleles/permutationTest1K.tsv")
 
 #N alleles per ethnic group ----
 #TODO add permutation test
@@ -553,10 +550,9 @@ fig3d <- alleleStats %>%
            rank >= 15 & rank < 30 ~ "2",
            rank >= 30 ~ "3"),
            levels=c("1","2","3"))) %>% 
-  ggplot(aes(x=fct_reorder(geneName,rank),y=nAlleles,fill=Ethnicity))+
+  ggplot(aes(x=fct_reorder(geneName,rank),y=nAlleles ,fill=Ethnicity))+
   geom_bar(stat="identity",position = position_dodge2(width = 0.9, preserve = "single"),
            color="grey38",linewidth=0.15)+
-  
   #stat_summary(fun.data = give.n, geom = "text",size=3)+
   theme_bw()+
   rotate_x_text()+
@@ -568,8 +564,11 @@ fig3d <- alleleStats %>%
     strip.text.x = element_blank(),
     legend.position = 'none',
     axis.title.x = element_blank(),
+    axis.title.y = element_text(size=14),
+    axis.text.x = element_text(size=12),
+    axis.text.y = element_text(size=12),
     plot.margin = unit(c(5.5,5.5,5.5,10),"points")
-  )
+  ) + scale_y_continuous(expand = expansion(mult = c(0.1, 0.2))) 
 
 # ggsave(filename = "~/alleles/alleles-paper/plots/NumberOfAllelesPerFixedNDonors.pdf", plot= g,device = "pdf",
 #        width = 12,height = 8,units = "in",bg="white")
@@ -621,6 +620,10 @@ fig3c <- alleleStats_J %>%
   theme(
     strip.background = element_blank(),
     strip.text.x = element_blank(),
+    axis.title.y = element_text(size=14),     # Increase y-axis title font size
+    axis.text.x = element_text(size=12),      # Increase x-axis labels font size
+    axis.text.y = element_text(size=12),      # Increase y-axis labels font size
+    strip.text = element_text(size=14),
     legend.position = 'none',
     axis.title.x = element_blank(),
     plot.margin = unit(c(10,5.5,10,6.5),"points")
@@ -666,7 +669,7 @@ populationFreqs<-alleles_db %>%
   ungroup() %>%
   left_join(alleleSeq,by="alleleName")  %>% 
   mutate(alleleNumber=str_remove(alleleName,".*\\*"),
-         isNovel=str_detect(alleleName,"x"))
+         isNovel=alleleName %in% novelAlleles)
 
 aaGroups<-populationFreqs %>% 
   filter(Ethnicity=="All") %>% 
@@ -782,27 +785,43 @@ fig4_leg<-cowplot::get_legend(g )
 
 
 
-fig4a<-cowplot::plot_grid(plotlist = allHeatmaps[1:6],nrow=6)
-fig4b<-cowplot::plot_grid(plotlist = allHeatmaps[7:16],ncol=2)
-fig4c<-cowplot::plot_grid(plotlist = allHeatmaps[17:42],ncol=3)
+figS3a<-cowplot::plot_grid(plotlist = allHeatmaps[1:6],nrow=6)
+figS3b<-cowplot::plot_grid(plotlist = allHeatmaps[7:16],ncol=2)
+figS3c<-cowplot::plot_grid(plotlist = allHeatmaps[17:42],ncol=3)
 
+#IGHV1-69, IGHV3-23,IGHV3-48,IGH3-7
 
 ## Fig 4 ----
+fig4a<-cowplot::plot_grid(plotlist = allHeatmaps[c(1,4)],nrow=2)
+fig4b<-cowplot::plot_grid(plotlist = allHeatmaps[c(18,23)],ncol=2)
+
 fig4<-
+  plot_grid(fig4a,fig4b,nrow=2,
+            rel_heights = c(1,0.5))
+
+ggsave(filename = "FigS3.pdf", plot= fig4,device = "pdf",
+       width = 30,height = 24,units = "in",bg="white")
+ggsave(filename = "FigS3.png", plot= fig4,device = "png",
+       width = 30,height = 24,units = "in",bg="white")
+## Fig S3 ----
+
+figS3<-
   plot_grid(
-    plot_grid(fig4a,fig4b,nrow=2),
-    fig4c,
+    plot_grid(figS3a,figS3b,nrow=2),
+    figS3c,
     rel_widths = c(0.7,1),
     nrow=1)
 
-fig4<-ggdraw()+
-  draw_plot(fig4,x=0,y=0,width=1,height=1)+
+figS3<-ggdraw()+
+  draw_plot(figS3,x=0,y=0,width=1,height=1)+
   draw_plot(fig4_leg,x=0.75,y=0.017,width=0.3,height = 0.1)
 
-ggsave(filename = "Fig4.pdf", plot= fig4,device = "pdf",
+ggsave(filename = "FigS3.pdf", plot= fig4,device = "pdf",
        width = 30,height = 24,units = "in",bg="white")
-ggsave(filename = "Fig4.png", plot= fig4,device = "png",
+ggsave(filename = "FigS3.png", plot= fig4,device = "png",
        width = 30,height = 24,units = "in",bg="white")
+
+
 
 
 
@@ -815,6 +834,8 @@ allVGenes <- populationFreqs %>%
   mutate(geneName=fct_reorder(geneName,n)) %>% 
   pull(geneName)
 
+
+
 js_df<-lapply(allVGenes, function(v){
   heatmapMatrixFreqs<-populationFreqs %>% 
     filter(geneName==v) %>% 
@@ -825,7 +846,8 @@ js_df<-lapply(allVGenes, function(v){
     mutate(nHaplotypes=as.numeric(nHaplotypes)) %>% 
     complete(nesting(alleleName,geneName,alleleNumber),Ethnicity, fill = list(nHaplotypes=0.1)) %>% 
     group_by(Ethnicity) %>% 
-    mutate(alleleFreqNorm=nHaplotypes/sum(nHaplotypes)) 
+    mutate(alleleFreqNorm=nHaplotypes/sum(nHaplotypes)) |> 
+    ungroup()
   
   
   ethnPairs<-combn(heatmapMatrixFreqs$Ethnicity %>% unique() %>% as.character,2,simplify = F)
@@ -850,6 +872,80 @@ js_df<-lapply(allVGenes, function(v){
 }) %>% bind_rows()
 
 
+## Jensen-Shannon Permutation test ----
+vjDistPermTest <- lapply(1:1000, function(it) {
+  ethnicities_reshuffled <- donors_ethnicities |> mutate(ethnicity=sample(ethnicity))
+
+  populationFreqs<-alleles_db %>%
+    select(-ethnicity) |> 
+    left_join(ethnicities_reshuffled,by="donor") |> 
+    filter(totalClonesCountForGene>50,
+           ethnicity!="Unknown",
+           ethnicity!="Hispanic/Latino",
+           geneName %in% frequentVs) %>% 
+    group_by(donor,geneName) %>% 
+    mutate(zigosity=n(),
+           homozigous=ifelse(zigosity==1,"1,1",as.character(zigosity))) %>%
+    separate_rows(homozigous,sep=",") %>% 
+    mutate(Ethnicity=factor(ethnicity,
+                            levels=c("Caucasian","African","Asian")))%>% 
+    group_by(geneName,Ethnicity) %>% 
+    mutate(totalNHaplotypesGene=n()) %>% 
+    ungroup() %>% 
+    group_by(geneName,alleleName,Ethnicity,totalNHaplotypesGene) %>% 
+    summarize(nHaplotypes=n(),
+              alleleFreq=nHaplotypes/dplyr::first(totalNHaplotypesGene)) %>%
+    ungroup() %>% 
+    mutate(alleleNumber=str_remove(alleleName,".*\\*"))
+  
+  js_df<-lapply(allVGenes, function(v){
+    heatmapMatrixFreqs<-populationFreqs %>% 
+      filter(geneName==v) %>% 
+      mutate(nHaplotypes=as.numeric(nHaplotypes)) %>% 
+      complete(nesting(alleleName,geneName,alleleNumber),Ethnicity, fill = list(nHaplotypes=0.1)) %>% 
+      group_by(Ethnicity) %>% 
+      mutate(alleleFreqNorm=nHaplotypes/sum(nHaplotypes)) |> 
+      ungroup()
+    
+    
+    ethnPairs<-combn(heatmapMatrixFreqs$Ethnicity %>% unique() %>% as.character,2,simplify = F)
+    
+    js<-lapply(ethnPairs,function(ethnPair){
+      df<-inner_join(heatmapMatrixFreqs %>% filter(Ethnicity==ethnPair[[1]]) %>% select(alleleNumber,alleleFreqNorm),
+                     heatmapMatrixFreqs %>% filter(Ethnicity==ethnPair[[2]]) %>% select(alleleNumber,alleleFreqNorm),
+                     by="alleleNumber")
+      m <- 0.5 * (df$alleleFreqNorm.x + df$alleleFreqNorm.y)
+      JS <- 0.5 * (sum(df$alleleFreqNorm.x * log2(df$alleleFreqNorm.x / m)) +
+                     sum(df$alleleFreqNorm.y * log2(df$alleleFreqNorm.y / m)))
+      return(JS)
+    }) %>% unlist()
+    
+    js_df<-plyr::ldply(ethnPairs, rbind) %>% 
+      mutate(js_divergence=js,
+             vGene=v) %>% 
+      set_colnames(c("Ethnicity.x","Ethnicity.y","JensenShannonDivergence","vGene")) |> 
+      mutate(iteration=it)
+    
+    
+    return(js_df)
+  }) %>% bind_rows()
+
+}) |> bind_rows()
+
+
+
+vjDistPermTest.pvalue<-vjDistPermTest |> 
+  left_join(js_df,
+            by = c("Ethnicity.x","Ethnicity.y","vGene"),
+            suffix = c('.reshuf','.orig')) |> 
+  mutate(JSGreaterThanInOrig=JensenShannonDivergence.reshuf >= JensenShannonDivergence.orig ) |> 
+  group_by(Ethnicity.x, Ethnicity.y,vGene) |> 
+  summarise(p=sum(JSGreaterThanInOrig)/max(iteration)) |> 
+  ungroup() |> 
+  mutate(p.adj=p.adjust(p,"BH"))
+  
+  
+
 ##Fig S4 Jensen-Shannon V divergence ----
 figS4<-js_df %>% 
   filter(Ethnicity.x!="All",!str_detect(Ethnicity.x,"Hisp"),!str_detect(Ethnicity.y,"Hisp")) %>% 
@@ -862,15 +958,26 @@ figS4<-js_df %>%
               filter(Ethnicity=="All") %>% 
               count(geneName),
             by=join_by(vGene==geneName)) %>% 
+  left_join(vjDistPermTest.pvalue |> 
+            bind_rows(vjDistPermTest.pvalue |> 
+                        mutate(ethn.tmp=Ethnicity.x,
+                                 Ethnicity.x=Ethnicity.y,
+                                 Ethnicity.y=ethn.tmp) |> 
+                        select(-ethn.tmp)
+            ), by=c("Ethnicity.x","Ethnicity.y","vGene")) |> 
   mutate(vGene=fct_reorder(vGene,n,.desc = T),
          Ethnicity.x=str_replace(Ethnicity.x,"Hispanic/Latino","Hisp/Lat"),
          Ethnicity.y=str_replace(Ethnicity.y,"Hispanic/Latino","Hisp/Lat"),
          Ethnicity.x=str_replace(Ethnicity.x,"Caucasian","Cauc."),
-         Ethnicity.y=str_replace(Ethnicity.y,"Caucasian","Cauc.")) %>% 
+         Ethnicity.y=str_replace(Ethnicity.y,"Caucasian","Cauc."),
+         p.sign=case_when(p.adj > 0.05 ~ "",
+                          p.adj>= 0.01 ~ "*",
+                          TRUE ~ "**")) |> 
   ggplot(aes(x=Ethnicity.x ,y=Ethnicity.y,fill=JensenShannonDivergence)) +
   facet_wrap( ~ vGene,scales="free_x")+
   theme_classic()+
   geom_tile(color="grey38",linewidth=0.15)+
+  geom_text(aes(label=p.sign), color="grey89", size=5, vjust=0.5, hjust=0.5) +
   scale_fill_gradientn(colors=c("#FAFAB4","#8DDA7F","#337E90","#1C0F5C"),na.value = "grey99")+
   labs(fill="Jensen-\nShannon\ndivergence") +
   theme(axis.title = element_blank())
@@ -1412,10 +1519,38 @@ library(patchwork)
 legend <- cowplot::get_legend(
   # create some space to the left of the legend
   fig2a + theme(legend.position="bottom",
-                legend.box.margin = margin(0, 0, 0, 12))+
+                legend.box.margin = margin(0, 0, 0, 12),
+                legend.title=element_text(size=14), 
+                legend.text=element_text(size=12))+
     scale_colour_discrete(guide = "none")+
     labs(fill="Alleles")
 )
+
+fig2a<-fig2a+theme(axis.title.y = element_text(size=14),     
+        axis.text.x = element_text(size=12),     
+        axis.text.y = element_text(size=12),     
+        strip.text = element_text(size=14))
+fig2b<-fig2b+theme(axis.title.y = element_text(size=14),     
+                   axis.text.x = element_text(size=12),     
+                   axis.text.y = element_text(size=12),     
+                   strip.text = element_text(size=14))
+fig2c<-fig2c+theme(axis.title.y = element_text(size=14),     
+                   axis.text.x = element_text(size=12),     
+                   axis.text.y = element_text(size=12),     
+                   strip.text = element_text(size=14))
+fig2d<-fig2d+theme(axis.title.y = element_text(size=14),     
+                   axis.text.x = element_text(size=12),     
+                   axis.text.y = element_text(size=12),     
+                   strip.text = element_text(size=14))
+fig2e<-fig2e+theme(axis.title.y = element_text(size=14),     
+                   axis.text.x = element_text(size=12),     
+                   axis.text.y = element_text(size=12),     
+                   strip.text = element_text(size=14))
+fig2f<-fig2f+theme(axis.title.y = element_text(size=14),     
+                   axis.text.x = element_text(size=12),     
+                   axis.text.y = element_text(size=12),     
+                   strip.text = element_text(size=14))
+
 
 fig2<-plot_grid(fig2a,fig2b,fig2c,fig2d,
                 plot_grid(fig2e,fig2f, legend,
@@ -1454,6 +1589,8 @@ legend <- cowplot::get_legend(
     theme(legend.position = "bottom",
           strip.background =element_rect(fill="white"),
           axis.title.x = element_blank(),
+          legend.title=element_text(size=14), 
+          legend.text=element_text(size=12), 
           plot.margin = unit(c(3,5.5,6.5,6.5), "points")) + theme(legend.position="bottom",
                                                                   legend.box.margin = margin(0, 0, 0, 0))+
     scale_colour_discrete(guide = "none")+
@@ -1476,7 +1613,7 @@ fig3<-
     rel_heights = c(1,0.05)
   )
 
-ggsave(filename = "Fig3.pdf", plot= fig3,device = "pdf",
+ggsave(filename = "plots/Fig3.pdf", plot= fig3,device = "pdf",
        width = 16,height = 8,units = "in",bg = "white")
-ggsave(filename = "Fig3.png", plot= fig3,device = "png",
+ggsave(filename = "plots/Fig3.png", plot= fig3,device = "png",
        width = 16,height = 8,units = "in",bg = "white")
