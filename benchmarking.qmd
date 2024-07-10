@@ -1110,16 +1110,17 @@ alleleComparison<-
                       filter(!str_detect(alleleName,"IGHJ")|compareJs) %>% 
                       mutate(alleleSeq=ifelse(is.na(trimSeqBy),
                                               alleleSeq,
-                                              str_sub(alleleSeq,1,-trimSeqBy-1)),
-                             alleleSeq=ifelse(protocol=="noumi",
-                                              str_sub(alleleSeq,20),
-                                              alleleSeq)),
+                                              str_sub(alleleSeq,1,-trimSeqBy-1))),
+      # ,
+      #                        alleleSeq=ifelse(protocol=="noumi",
+      #                                         str_sub(alleleSeq,20),
+      #                                         alleleSeq)),
       by =c ("alleleSeq","donor")) %>%  
       replace_na(list(donor.y = tldpt["donor"],
                       tool = tldpt["tool"],
                       depth = tldpt["depth"]))
   }) %>% bind_rows() %>% 
-  mutate(geneName=ifelse(is.na(geneName.y),geneName.x,geneName.y),.before=alleleSeq.x) %>% 
+  mutate(geneName=ifelse(is.na(geneName.y),as.character(geneName.x),geneName.y),.before=alleleSeq.x) %>% 
   ungroup() %>%
   dplyr::rename(
     donor=donor.y,
@@ -1338,6 +1339,66 @@ fig1b<-comparisonStats  %>%
 ## 
 
 ## Comparison divided by presence/absence in starting reference library
+
+```{r}
+comparisonStats<-
+  alleleComparison %>%
+    filter(depth=="full") %>%
+  ungroup() %>% 
+  group_by(donor,inStartRef,tool,matchStatus) %>% 
+  # n_disctinct because some of the tools' findings match to multiple genes, while may be the same in sequence
+  summarise(N=n_distinct(alleleSeq.tool,alleleName.iGenotyper)) %>% 
+  ungroup() %>% 
+  complete(inStartRef,matchStatus,nesting(donor,tool),fill=list(N=0)) %>% 
+  group_by(donor,tool) %>% 
+  mutate(nAllelesTotal=sum(N[matchStatus=="match" | matchStatus== "falseNegative"])) %>% 
+  mutate(fraction=N/nAllelesTotal)
+
+
+#Comparison divided by presence/absence in starting reference library ----
+
+give.n <- function(y){
+  return(data.frame(
+    y = -0.03,
+    label = paste0('N=', length(y)))) 
+}
+
+give.median <- function(y){
+  return(data.frame(
+    y = -0.06,
+    label =  paste0('median=', round(median(y),2)))) 
+}
+
+fig1c<-  comparisonStats  %>% 
+    left_join(stats %>% select(donor,totalReads:readsUsedInClonotypes)) %>% 
+    filter(
+      totalClonotypes>3000,
+      matchStatus %in% c("falseNegative")) %>% 
+    mutate(matchStatus=factor(matchStatus,levels=c("falseNegative","match","falsePositive"))) %>% 
+    ggplot(aes(y=fraction,x=tool,fill=tool))+
+    geom_boxplot(outlier.shape = NA)+
+    facet_grid( ~ inStartRef,
+               labeller = labeller(inStartRef=c(`FALSE`="Absent in starting\nreference library",
+                                                `TRUE`="Present in starting\nreference library"),
+                                   matchStatus=c(match="Alleles supported by long reads",
+                                                 falseNegative="Alleles missed",
+                                                 falsePositive="Alleles not supported by long reads"))
+               )+
+    geom_point(aes(group=inStartRef),position = position_dodge(width=0.75))+
+    theme_bw()+
+    scale_fill_manual(values = mi_dark,labels=c("MiXCR","TIgGER"))+
+    labs(y="Fraction of missed alleles",
+         x="Genotyping tool",
+         fill="Genotyping\ntool")+
+    stat_summary(fun.data = give.n, geom = "text",size=3)+
+    stat_summary(fun.data = give.median, geom = "text",size=3) +
+    scale_x_discrete(labels=c("MiXCR","TIgGER"))+
+  theme(legend.position = "none",
+        strip.background = element_rect(fill="white"),
+        axis.title.x=element_blank())
+```
+
+# Comparison divided by TYPE (5'RACE/ Vmix) of data
 
 ```{r}
 comparisonStats<-
@@ -2096,4 +2157,102 @@ whichChanged<-function(donor){
         mutate(relativeMutations=mapply(mutationsAlaMixcr, alleleSeq.FN,alleleSeq.FP) %>% str_remove("D.1 D.2 D.3 D.4 D.5 D.6 "), clearedRelMut=relativeMutations %>% str_extract_all("S.\\d{1,3}.") %>% sapply(paste, collapse=" ")) %>% relocate(clearedRelMut, .after=donor) %>%  View()
 ```
 
-## 
+## SHM
+
+```{r}
+igenotyper_muts<-read_tsv(dir("~/paper_alleles/benchmarking/igenotyper/mixcr/mutations",
+                              pattern=".tsv",
+                              full.names = T),id = "filename")
+
+igenotyper_muts <- igenotyper_muts |> 
+  rename(shm=`nMutationsRate{FR1Begin(6):FR3End}`) |> 
+  mutate(donor=str_remove_all(filename,".*\\/|_IGH.tsv|SRR.*?_"))
+
+shmStats <- igenotyper_muts |> 
+  filter(shm!="region_not_covered") |> 
+  mutate(shm=as.numeric(shm)) |> 
+  group_by(donor) |> 
+  summarise(meanSHM=mean(shm))
+
+g1<-comparisonStats %>%
+    filter(
+        totalClonotypes > 3000,
+        matchStatus %in% c("falseNegative")
+    ) %>%
+    mutate(matchStatus = factor(matchStatus, levels = c("falseNegative", "match", "falsePositive"))) %>%
+    left_join(shmStats, by = "donor") %>%
+    ggplot(aes(y = fraction, x = meanSHM)) +
+    geom_point() +
+    #facet_wrap(~tool) +
+    stat_cor(aes(label = paste(..r.label.., ..p.label.., sep = "~`,`~")), method = "pearson",
+             label.x.npc = "middle", label.y.npc = "top") +
+    theme_bw()+
+   labs(y="Fraction of alleles\nsupported by long reads",x = "Mean SHM level in a sample")
+
+g2<-comparisonStats %>%
+    filter(
+        totalClonotypes > 3000,
+        matchStatus %in% c("falsePositive")
+    ) %>%
+    mutate(matchStatus = factor(matchStatus, levels = c("falseNegative", "match", "falsePositive"))) %>%
+    left_join(shmStats, by = "donor") %>%
+    ggplot(aes(y = N, x = meanSHM)) +
+    geom_point() +
+    #facet_wrap(~tool) +
+    stat_cor(aes(label = paste(..r.label.., ..p.label.., sep = "~`,`~")), method = "pearson",
+             label.x.npc = "middle", label.y.npc = "top") +
+    theme_bw()+
+   labs(y="# potential false\npositive calls",x = "Mean SHM level in a sample")
+
+```
+
+
+```{r}
+
+facet_labels <- c(mixcr = "MiXCR", tigger = "TIgGER")
+
+g3<-comparisonStats  %>% 
+    left_join(protocol_donor,by="donor") |> 
+    filter(
+        totalClonotypes>3000,
+        matchStatus %in% c("match"),
+        tool=="mixcr") %>%   #,"tooFewClonesInRepseqNotEnoughInfo")) %>% 
+    mutate(matchStatus=factor(matchStatus,levels=c("falseNegative","match","falsePositive"))) %>% 
+    ggplot(aes(y=fraction,x=protocol))+
+    geom_boxplot(fill="#198020")+
+ #   facet_grid( ~ tool , labeller = labeller(tool = facet_labels))+
+ # geom_point(position = position_dodge(width=0.75))+
+  scale_x_discrete(labels = c("5race" = "With UMIs", "noumi" = "Without UMIs")) +
+    stat_compare_means(method = "kruskal", label.x = 1.35, label.y = 0.0)+
+  theme_bw()+
+  labs(y="Fraction of alleles supported by long reads")
+
+g4<-comparisonStats  %>% 
+  left_join(protocol_donor,by="donor") |> 
+  filter(
+    totalClonotypes>3000,
+    matchStatus %in% c("falsePositive"),
+        tool=="mixcr") %>%   #,"tooFewClonesInRepseqNotEnoughInfo")) %>% 
+  mutate(matchStatus=factor(matchStatus,levels=c("falseNegative","match","falsePositive"))) %>% 
+  ggplot(aes(y=N,x=protocol))+
+    geom_boxplot(fill="#198020")+
+  #  facet_grid( ~ tool , labeller = labeller(tool = facet_labels))+
+  #geom_point(position = position_dodge(width=0.75))+
+  scale_x_discrete(labels = c("5race" = "With UMIs", "noumi" = "Without UMIs")) +
+    stat_compare_means(method = "kruskal", label.x = 1.5, label.y = 7.5)+
+  theme_bw()+
+ 
+  labs(y="# potential false positive calls")
+
+```
+
+
+```{r}
+plot_grid(plot_grid(g1,g2,nrow = 2),plot_grid(g3,g4,ncol = 2),nrow=2,rel_heights = c(1,0.5))
+```
+
+
+```{r}
+grateful::cite_packages(out.dir = ".",citation.style = "apa-6th-edition")
+```
+

@@ -25,7 +25,7 @@
   conflict_prefer("unique", winner = "base", quiet = FALSE)
   conflicts_prefer(ggplot2::annotate)
   conflicts_prefer(dplyr::desc)
-  
+  options(dplyr.summarise.inform = FALSE)
   `%+%` <- function(a, b) paste0(a, b)
 }
 
@@ -799,10 +799,10 @@ fig4<-
   plot_grid(fig4a,fig4b,nrow=2,
             rel_heights = c(1,0.5))
 
-ggsave(filename = "FigS3.pdf", plot= fig4,device = "pdf",
-       width = 30,height = 24,units = "in",bg="white")
-ggsave(filename = "FigS3.png", plot= fig4,device = "png",
-       width = 30,height = 24,units = "in",bg="white")
+ggsave(filename = "plots/Fig4.pdf", plot= fig4,device = "pdf",
+       width = 10,height = 8,units = "in",bg="white")
+ggsave(filename = "plots/Fig4.png", plot= fig4,device = "png",
+       width = 10,height = 8,units = "in",bg="white")
 ## Fig S3 ----
 
 figS3<-
@@ -816,9 +816,9 @@ figS3<-ggdraw()+
   draw_plot(figS3,x=0,y=0,width=1,height=1)+
   draw_plot(fig4_leg,x=0.75,y=0.017,width=0.3,height = 0.1)
 
-ggsave(filename = "FigS3.pdf", plot= fig4,device = "pdf",
+ggsave(filename = "plots/FigS3.pdf", plot= fig4,device = "pdf",
        width = 30,height = 24,units = "in",bg="white")
-ggsave(filename = "FigS3.png", plot= fig4,device = "png",
+ggsave(filename = "plots/FigS3.png", plot= fig4,device = "png",
        width = 30,height = 24,units = "in",bg="white")
 
 
@@ -844,28 +844,39 @@ js_df<-lapply(allVGenes, function(v){
                     sum()) %>%
     ungroup() %>% 
     mutate(nHaplotypes=as.numeric(nHaplotypes)) %>% 
-    complete(nesting(alleleName,geneName,alleleNumber),Ethnicity, fill = list(nHaplotypes=0.1)) %>% 
+    complete(nesting(alleleName,geneName,alleleNumber),Ethnicity, fill = list(nHaplotypes=0)) %>% 
     group_by(Ethnicity) %>% 
-    mutate(alleleFreqNorm=nHaplotypes/sum(nHaplotypes)) |> 
+    mutate(alleleFreqNorm=(nHaplotypes+1)/sum(nHaplotypes+1)) |> 
     ungroup()
   
   
   ethnPairs<-combn(heatmapMatrixFreqs$Ethnicity %>% unique() %>% as.character,2,simplify = F)
   
-  js<-lapply(ethnPairs,function(ethnPair){
+  js_df<-lapply(ethnPairs,function(ethnPair){
     df<-inner_join(heatmapMatrixFreqs %>% filter(Ethnicity==ethnPair[[1]]) %>% select(alleleNumber,alleleFreqNorm),
                    heatmapMatrixFreqs %>% filter(Ethnicity==ethnPair[[2]]) %>% select(alleleNumber,alleleFreqNorm),
                    by="alleleNumber")
     m <- 0.5 * (df$alleleFreqNorm.x + df$alleleFreqNorm.y)
     JS <- 0.5 * (sum(df$alleleFreqNorm.x * log2(df$alleleFreqNorm.x / m)) +
                    sum(df$alleleFreqNorm.y * log2(df$alleleFreqNorm.y / m)))
-    return(JS)
-  }) %>% unlist()
+    
+    
+    bhattacharyya<- -log(sum(sqrt(df$alleleFreqNorm.x*df$alleleFreqNorm.y)))
+    hellinger <- sqrt( sum( ( sqrt(df$alleleFreqNorm.x)-sqrt(df$alleleFreqNorm.y) )^2) ) / sqrt(2)
+    
+    divergence<-tibble(Ethnicity.x = ethnPair[[1]],
+           Ethnicity.y = ethnPair[[2]],
+           vGene = v,
+           JensenShannonDivergence=JS,
+           bhattacharyya=bhattacharyya,
+           hellinger=hellinger)
+    return(divergence)
+  }) %>% bind_rows
   
-  js_df<-plyr::ldply(ethnPairs, rbind) %>% 
-    mutate(js_divergence=js,
-           vGene=v) %>% 
-    set_colnames(c("Ethnicity.x","Ethnicity.y","JensenShannonDivergence","vGene"))
+  # js_df<-plyr::ldply(ethnPairs, rbind) %>% 
+  #   mutate(js_divergence=js,
+  #          vGene=v) %>% 
+  #   set_colnames(c("Ethnicity.x","Ethnicity.y","JensenShannonDivergence","vGene"))
   
   
   return(js_df)
@@ -873,80 +884,90 @@ js_df<-lapply(allVGenes, function(v){
 
 
 ## Jensen-Shannon Permutation test ----
+job::job({
 vjDistPermTest <- lapply(1:1000, function(it) {
-  ethnicities_reshuffled <- donors_ethnicities |> mutate(ethnicity=sample(ethnicity))
-
-  populationFreqs<-alleles_db %>%
-    select(-ethnicity) |> 
-    left_join(ethnicities_reshuffled,by="donor") |> 
-    filter(totalClonesCountForGene>50,
-           ethnicity!="Unknown",
-           ethnicity!="Hispanic/Latino",
-           geneName %in% frequentVs) %>% 
-    group_by(donor,geneName) %>% 
-    mutate(zigosity=n(),
-           homozigous=ifelse(zigosity==1,"1,1",as.character(zigosity))) %>%
-    separate_rows(homozigous,sep=",") %>% 
-    mutate(Ethnicity=factor(ethnicity,
-                            levels=c("Caucasian","African","Asian")))%>% 
-    group_by(geneName,Ethnicity) %>% 
-    mutate(totalNHaplotypesGene=n()) %>% 
-    ungroup() %>% 
-    group_by(geneName,alleleName,Ethnicity,totalNHaplotypesGene) %>% 
-    summarize(nHaplotypes=n(),
-              alleleFreq=nHaplotypes/dplyr::first(totalNHaplotypesGene)) %>%
-    ungroup() %>% 
-    mutate(alleleNumber=str_remove(alleleName,".*\\*"))
   
-  js_df<-lapply(allVGenes, function(v){
+  lapply(allVGenes, function(v){
+    ethnicities_reshuffled <- donors_ethnicities |> mutate(ethnicity=sample(ethnicity))
+    
+    populationFreqs<-alleles_db %>%
+      select(-ethnicity) |> 
+      left_join(ethnicities_reshuffled,by="donor") |> 
+      filter(totalClonesCountForGene>50,
+             ethnicity!="Unknown",
+             ethnicity!="Hispanic/Latino",
+             geneName %in% frequentVs) %>% 
+      group_by(donor,geneName) %>% 
+      mutate(zigosity=n(),
+             homozigous=ifelse(zigosity==1,"1,1",as.character(zigosity))) %>%
+      separate_rows(homozigous,sep=",") %>% 
+      mutate(Ethnicity=factor(ethnicity,
+                              levels=c("Caucasian","African","Asian")))%>% 
+      group_by(geneName,Ethnicity) %>% 
+      mutate(totalNHaplotypesGene=n()) %>% 
+      ungroup() %>% 
+      group_by(geneName,alleleName,Ethnicity,totalNHaplotypesGene) %>% 
+      summarize(nHaplotypes=n(),
+                alleleFreq=nHaplotypes/dplyr::first(totalNHaplotypesGene)) %>%
+      ungroup() %>% 
+      mutate(alleleNumber=str_remove(alleleName,".*\\*"))
+    
     heatmapMatrixFreqs<-populationFreqs %>% 
       filter(geneName==v) %>% 
       mutate(nHaplotypes=as.numeric(nHaplotypes)) %>% 
-      complete(nesting(alleleName,geneName,alleleNumber),Ethnicity, fill = list(nHaplotypes=0.1)) %>% 
+      complete(nesting(alleleName,geneName,alleleNumber),Ethnicity, fill = list(nHaplotypes=0)) %>% 
       group_by(Ethnicity) %>% 
-      mutate(alleleFreqNorm=nHaplotypes/sum(nHaplotypes)) |> 
+      mutate(alleleFreqNorm=(nHaplotypes+1)/sum(nHaplotypes+1)) |> 
       ungroup()
     
-    
-    ethnPairs<-combn(heatmapMatrixFreqs$Ethnicity %>% unique() %>% as.character,2,simplify = F)
-    
-    js<-lapply(ethnPairs,function(ethnPair){
+    js_df<-lapply(ethnPairs,function(ethnPair){
       df<-inner_join(heatmapMatrixFreqs %>% filter(Ethnicity==ethnPair[[1]]) %>% select(alleleNumber,alleleFreqNorm),
                      heatmapMatrixFreqs %>% filter(Ethnicity==ethnPair[[2]]) %>% select(alleleNumber,alleleFreqNorm),
                      by="alleleNumber")
       m <- 0.5 * (df$alleleFreqNorm.x + df$alleleFreqNorm.y)
       JS <- 0.5 * (sum(df$alleleFreqNorm.x * log2(df$alleleFreqNorm.x / m)) +
                      sum(df$alleleFreqNorm.y * log2(df$alleleFreqNorm.y / m)))
-      return(JS)
-    }) %>% unlist()
-    
-    js_df<-plyr::ldply(ethnPairs, rbind) %>% 
-      mutate(js_divergence=js,
-             vGene=v) %>% 
-      set_colnames(c("Ethnicity.x","Ethnicity.y","JensenShannonDivergence","vGene")) |> 
+        #  bhattacharyya<- -log(sum(sqrt(df$alleleFreqNorm.x*df$alleleFreqNorm.y)))
+      hellinger <- sqrt( sum( ( sqrt(df$alleleFreqNorm.x)-sqrt(df$alleleFreqNorm.y) )^2) ) / sqrt(2)
+      
+      divergence<-tibble(Ethnicity.x = ethnPair[[1]],
+                         Ethnicity.y = ethnPair[[2]],
+                         vGene = v,
+                         JensenShannonDivergence=JS,
+                     #    bhattacharyya=bhattacharyya,
+                         hellinger=hellinger)
+      return(divergence)
+    }) %>% bind_rows() |> 
       mutate(iteration=it)
-    
-    
     return(js_df)
-  }) %>% bind_rows()
+  }) %>% bind_rows() 
+    
+}) %>% bind_rows()
+},import = "auto")
 
-}) |> bind_rows()
-
+vjDistPermTest |> write_tsv("VJ_permutation.tsv")
 
 
 vjDistPermTest.pvalue<-vjDistPermTest |> 
   left_join(js_df,
             by = c("Ethnicity.x","Ethnicity.y","vGene"),
             suffix = c('.reshuf','.orig')) |> 
-  mutate(JSGreaterThanInOrig=JensenShannonDivergence.reshuf >= JensenShannonDivergence.orig ) |> 
+  mutate(hlngrGreaterThanInOrig=hellinger.reshuf >= hellinger.orig ) |> 
   group_by(Ethnicity.x, Ethnicity.y,vGene) |> 
-  summarise(p=sum(JSGreaterThanInOrig)/max(iteration)) |> 
+  summarise(p=sum(hlngrGreaterThanInOrig)/max(iteration)) |> 
   ungroup() |> 
   mutate(p.adj=p.adjust(p,"BH"))
-  
-  
 
-##Fig S4 Jensen-Shannon V divergence ----
+contrast <- function(colour) {
+  out   <- rep("black", length(colour))
+  light <- farver::get_channel(colour, "l", space = "hcl")
+  out[light < 50] <- "white"
+  out
+}  
+
+autocontrast <- aes(colour = after_scale(contrast(fill)))
+
+##Fig S4 Hellinger V distance ----
 figS4<-js_df %>% 
   filter(Ethnicity.x!="All",!str_detect(Ethnicity.x,"Hisp"),!str_detect(Ethnicity.y,"Hisp")) %>% 
   bind_rows(js_df %>% 
@@ -966,20 +987,20 @@ figS4<-js_df %>%
                         select(-ethn.tmp)
             ), by=c("Ethnicity.x","Ethnicity.y","vGene")) |> 
   mutate(vGene=fct_reorder(vGene,n,.desc = T),
-         Ethnicity.x=str_replace(Ethnicity.x,"Hispanic/Latino","Hisp/Lat"),
-         Ethnicity.y=str_replace(Ethnicity.y,"Hispanic/Latino","Hisp/Lat"),
-         Ethnicity.x=str_replace(Ethnicity.x,"Caucasian","Cauc."),
-         Ethnicity.y=str_replace(Ethnicity.y,"Caucasian","Cauc."),
+         # Ethnicity.x=str_replace(Ethnicity.x,"Hispanic/Latino","Hisp/Lat"),
+         # Ethnicity.y=str_replace(Ethnicity.y,"Hispanic/Latino","Hisp/Lat"),
+         Ethnicity.x=str_replace(Ethnicity.x,"Caucasian","Eur."),
+         Ethnicity.y=str_replace(Ethnicity.y,"Caucasian","Eur."),
          p.sign=case_when(p.adj > 0.05 ~ "",
                           p.adj>= 0.01 ~ "*",
                           TRUE ~ "**")) |> 
-  ggplot(aes(x=Ethnicity.x ,y=Ethnicity.y,fill=JensenShannonDivergence)) +
+  ggplot(aes(x=Ethnicity.x ,y=Ethnicity.y,fill=hellinger)) +
   facet_wrap( ~ vGene,scales="free_x")+
   theme_classic()+
   geom_tile(color="grey38",linewidth=0.15)+
-  geom_text(aes(label=p.sign), color="grey89", size=5, vjust=0.5, hjust=0.5) +
+  geom_text(aes(label=p.sign, !!!autocontrast), size=5, vjust=0.5, hjust=0.5) +
   scale_fill_gradientn(colors=c("#FAFAB4","#8DDA7F","#337E90","#1C0F5C"),na.value = "grey99")+
-  labs(fill="Jensen-\nShannon\ndivergence") +
+  labs(fill="Hellinger\ndistance") +
   theme(axis.title = element_blank())
 #theme(legend.position = "none")
 
