@@ -167,44 +167,44 @@ jGeneStats<-alleles_db %>%
 
 
 #N V alleles in populations----
-## Fig S3 Total N V alleles p/ Gene & Ethnicity----
-figS3<- alleles_db %>%
-  filter(totalClonesCountForGene>50,
-         ethnicity!="Unknown",
-         geneName %in% frequentVs) %>% 
-  group_by(geneName,ethnicity) %>% 
-  summarise(nAlleles=n_distinct(alleleName),
-            nDonors=n_distinct(donor)) %>%
-  bind_rows(
-    alleles_db %>%
-      filter(totalClonesCountForGene>50,
-             geneName %in% frequentVs) %>% 
-      group_by(geneName) %>% 
-      summarise(nAlleles=n_distinct(alleleName),
-                nDonors=n_distinct(donor)) %>% 
-      mutate(ethnicity="All")
-  ) %>% 
-  inner_join(vGeneStats %>% select(geneName,medianFrequency,rank),by="geneName") %>% 
-  mutate(vFreqCategory=factor(case_when(
-    rank >= 1 & rank < 15 ~ "1",
-    rank >= 15 & rank < 30 ~ "2",
-    rank >= 30 ~ "3"),
-    levels=c("1","2","3"))) %>% 
-  mutate(Ethnicity=factor(ethnicity,levels=c("All","Caucasian","African","Asian", "Hispanic/Latino"))) %>%  
-  ggplot(aes(x=fct_reorder(geneName,rank),y=nAlleles,fill=Ethnicity))+
-  geom_bar(stat="identity",
-           position = position_dodge2(width = 0.9, preserve = "single"),
-           color="grey38",linewidth=0.15)+
-  theme_bw()+
-  rotate_x_text()+
-  facet_wrap(~vFreqCategory,scales="free_x",nrow=3)+
-  theme(
-    strip.background = element_blank(),
-    strip.text.x = element_blank(),
-    legend.position = "none"
-  )+
-  labs(x="V gene name", y="# alleles")+
-  scale_fill_manual(values=ethnicity_colors)
+## Fig S3 Total N V alleles p/ Gene & Ethnicity
+# figS3<- alleles_db %>%
+#   filter(totalClonesCountForGene>50,
+#          ethnicity!="Unknown",
+#          geneName %in% frequentVs) %>% 
+#   group_by(geneName,ethnicity) %>% 
+#   summarise(nAlleles=n_distinct(alleleName),
+#             nDonors=n_distinct(donor)) %>%
+#   bind_rows(
+#     alleles_db %>%
+#       filter(totalClonesCountForGene>50,
+#              geneName %in% frequentVs) %>% 
+#       group_by(geneName) %>% 
+#       summarise(nAlleles=n_distinct(alleleName),
+#                 nDonors=n_distinct(donor)) %>% 
+#       mutate(ethnicity="All")
+#   ) %>% 
+#   inner_join(vGeneStats %>% select(geneName,medianFrequency,rank),by="geneName") %>% 
+#   mutate(vFreqCategory=factor(case_when(
+#     rank >= 1 & rank < 15 ~ "1",
+#     rank >= 15 & rank < 30 ~ "2",
+#     rank >= 30 ~ "3"),
+#     levels=c("1","2","3"))) %>% 
+#   mutate(Ethnicity=factor(ethnicity,levels=c("All","Caucasian","African","Asian", "Hispanic/Latino"))) %>%  
+#   ggplot(aes(x=fct_reorder(geneName,rank),y=nAlleles,fill=Ethnicity))+
+#   geom_bar(stat="identity",
+#            position = position_dodge2(width = 0.9, preserve = "single"),
+#            color="grey38",linewidth=0.15)+
+#   theme_bw()+
+#   rotate_x_text()+
+#   facet_wrap(~vFreqCategory,scales="free_x",nrow=3)+
+#   theme(
+#     strip.background = element_blank(),
+#     strip.text.x = element_blank(),
+#     legend.position = "none"
+#   )+
+#   labs(x="V gene name", y="# alleles")+
+#   scale_fill_manual(values=ethnicity_colors)
 
 # ggsave(filename = "~/alleles/alleles-paper/plots/NumberOfAlleles.pdf", plot= g,device = "pdf",
 #        width = 12,height = 8,units = "in",bg="white")
@@ -312,7 +312,7 @@ fig2f<-allelesStats_igh %>%
   scale_color_manual(values=c("white","black"))+
   scale_y_continuous(expand = expansion(mult = c(0.005, .1))) +
   annotate('label',x=-Inf,y=Inf,hjust=1,vjust=0, 
-           label= length(unique(alleles_db$donor)) %+% " individuals" )
+           label= length(unique(alleles_db$donor)) %+% " ind." )
 
 
 # N novel alleles per Ethnic group----
@@ -658,8 +658,9 @@ populationFreqs<-alleles_db %>%
   mutate(zigosity=n(),
          homozigous=ifelse(zigosity==1,"1,1",as.character(zigosity))) %>%
   separate_rows(homozigous,sep=",") %>% 
-  mutate(Ethnicity=factor(str_replace(ethnicity,"Hispanic/Latino","Hisp./Lat."),
-                          levels=c("All","Caucasian","African","Asian", "Hisp./Lat.")))%>% 
+  mutate(Ethnicity=factor(str_replace(ethnicity,"Hispanic/Latino","Hisp./Lat.") |> 
+                            str_replace("Caucasian","Eur.") ,
+                          levels=c("All","Eur.","African","Asian", "Hisp./Lat.")))%>% 
   group_by(geneName,Ethnicity) %>% 
   mutate(totalNHaplotypesGene=n()) %>% 
   ungroup() %>% 
@@ -777,7 +778,7 @@ g<-tibble(x=letters[1:3],y=letters[1:3],val=c(0,0.5,1)) %>%
   ggplot(aes(x=x ,y=y,fill=val)) +
   geom_tile(color="grey38",linewidth=0.15)+
   scale_fill_gradientn(colors=c("#FAFAB4","#8DDA7F","#337E90","#1C0F5C"),breaks = c(0,0.5,1) ,
-                       na.value = "grey99")+labs(fill="Allele\nfreq.")+
+                       na.value = "grey99")+labs(fill="Allele\nfrequency")+
   theme(legend.position = "bottom",plot.background = element_rect(fill = "white", colour = NA),
         panel.background=element_rect(fill = "white", colour = NA))
 
@@ -785,9 +786,9 @@ fig4_leg<-cowplot::get_legend(g )
 
 
 
-figS3a<-cowplot::plot_grid(plotlist = allHeatmaps[1:6],nrow=6)
-figS3b<-cowplot::plot_grid(plotlist = allHeatmaps[7:16],ncol=2)
-figS3c<-cowplot::plot_grid(plotlist = allHeatmaps[17:42],ncol=3)
+figS5a<-cowplot::plot_grid(plotlist = allHeatmaps[1:6],nrow=6)
+figS5b<-cowplot::plot_grid(plotlist = allHeatmaps[7:16],ncol=2)
+figS5c<-cowplot::plot_grid(plotlist = allHeatmaps[17:42],ncol=3)
 
 #IGHV1-69, IGHV3-23,IGHV3-48,IGH3-7
 
@@ -796,36 +797,38 @@ fig4a<-cowplot::plot_grid(plotlist = allHeatmaps[c(1,4)],nrow=2)
 fig4b<-cowplot::plot_grid(plotlist = allHeatmaps[c(18,23)],ncol=2)
 
 fig4<-
-  plot_grid(fig4a,fig4b,nrow=2,
-            rel_heights = c(1,0.5))
+  plot_grid(fig4a,fig4b,fig4_leg,nrow=3,
+            rel_heights = c(1,0.5,0.1))
+
 
 ggsave(filename = "plots/Fig4.pdf", plot= fig4,device = "pdf",
        width = 10,height = 8,units = "in",bg="white")
 ggsave(filename = "plots/Fig4.png", plot= fig4,device = "png",
        width = 10,height = 8,units = "in",bg="white")
-## Fig S3 ----
 
-figS3<-
+## Fig S5 ----
+
+figS5<-
   plot_grid(
-    plot_grid(figS3a,figS3b,nrow=2),
-    figS3c,
+    plot_grid(figS5a,figS5b,nrow=2),
+    figS4c,
     rel_widths = c(0.7,1),
     nrow=1)
 
-figS3<-ggdraw()+
-  draw_plot(figS3,x=0,y=0,width=1,height=1)+
+figS5<-ggdraw()+
+  draw_plot(figS5,x=0,y=0,width=1,height=1)+
   draw_plot(fig4_leg,x=0.75,y=0.017,width=0.3,height = 0.1)
 
-ggsave(filename = "plots/FigS3.pdf", plot= fig4,device = "pdf",
+ggsave(filename = "plots/FigS5.pdf", plot= figS5,device = "pdf",
        width = 30,height = 24,units = "in",bg="white")
-ggsave(filename = "plots/FigS3.png", plot= fig4,device = "png",
+ggsave(filename = "plots/FigS5.png", plot= figS5,device = "png",
        width = 30,height = 24,units = "in",bg="white")
 
 
 
 
 
-#V Jensen-Shannon divergence by  allele freq distributions ----
+#V gene distribution divergence by  allele freq distributions ----
 
 allVGenes <- populationFreqs %>% 
   filter(Ethnicity=="All") %>% 
@@ -883,7 +886,7 @@ js_df<-lapply(allVGenes, function(v){
 }) %>% bind_rows()
 
 
-## Jensen-Shannon Permutation test ----
+## Hellinger / Jensen-Shannon Permutation test ----
 job::job({
 vjDistPermTest <- lapply(1:1000, function(it) {
   
@@ -967,8 +970,8 @@ contrast <- function(colour) {
 
 autocontrast <- aes(colour = after_scale(contrast(fill)))
 
-##Fig S4 Hellinger V distance ----
-figS4<-js_df %>% 
+##Fig S6 Hellinger V distance ----
+figS6<-js_df %>% 
   filter(Ethnicity.x!="All",!str_detect(Ethnicity.x,"Hisp"),!str_detect(Ethnicity.y,"Hisp")) %>% 
   bind_rows(js_df %>% 
               filter(Ethnicity.x!="All",!str_detect(Ethnicity.x,"Hisp"),!str_detect(Ethnicity.y,"Hisp")) %>% 
@@ -1004,9 +1007,9 @@ figS4<-js_df %>%
   theme(axis.title = element_blank())
 #theme(legend.position = "none")
 
-ggsave(filename = "figS4.pdf", plot= figS4,device = "pdf",
+ggsave(filename = "plots/figS6.pdf", plot= figS6,device = "pdf",
        width = 16,height = 12,units = "in",bg="white")
-ggsave(filename = "figS4.png", plot= figS4,device = "png",
+ggsave(filename = "plots/figS6.png", plot= figS6,device = "png",
        width = 16,height = 12,units = "in",bg="white")
 
 
@@ -1027,8 +1030,9 @@ populationFreqsJ<-alleles_db %>%
   mutate(zigosity=n(),
          homozigous=ifelse(zigosity==1,"1,1",as.character(zigosity))) %>%
   separate_rows(homozigous,sep=",") %>% 
-  mutate(Ethnicity=factor(str_replace(ethnicity,"Hispanic/Latino","Hisp./Lat."),
-                          levels=c("All","Caucasian","African","Asian", "Hisp./Lat.")))%>% 
+  mutate(Ethnicity=factor(str_replace(ethnicity,"Hispanic/Latino","Hisp./Lat.") |> 
+                            str_replace("Caucasian","European") ,
+                          levels=c("All","European","African","Asian", "Hisp./Lat.")))%>% 
   group_by(geneName,Ethnicity) %>% 
   mutate(totalNHaplotypesGene=n()) %>% 
   ungroup() %>% 
@@ -1037,7 +1041,7 @@ populationFreqsJ<-alleles_db %>%
             alleleFreq=nHaplotypes/dplyr::first(totalNHaplotypesGene)) %>%
   ungroup() %>% 
   mutate(alleleNumber=str_remove(alleleName,".*\\*"),
-         isNovel=str_detect(alleleName,"x"))
+         isNovel=alleleName %in% novelAlleles)
 
 
 
@@ -1129,15 +1133,15 @@ allHeatmapsJ<-
     return(grid.grabExpr(draw(g)))
   })
 
-figS5<-plot_grid(
+figS7<-plot_grid(
   plot_grid(plotlist = allHeatmapsJ[c(  4,5,2,4,6)],nrow=1),
   plot_grid(plotlist = allHeatmapsJ[1],nrow=1),
   fig4_leg,
   rel_heights = c(1,1,0.1),
   nrow=3)
-ggsave(filename = "figS5.pdf", plot= figS5,device = "pdf",
+ggsave(filename = "plots/figS7.pdf", plot= figS7,device = "pdf",
        width = 12,height = 8,units = "in",bg="white")
-ggsave(filename = "figS5.png", plot= figS5,device = "png",
+ggsave(filename = "plots/figS7.png", plot= figS7,device = "png",
        width = 12,height = 8,units = "in",bg="white")
 
 
@@ -1228,7 +1232,7 @@ fig2a<-allelesStats_tcr %>%
   scale_color_manual(values=c("white","black"))+
   scale_y_continuous(expand = expansion(mult = c(0.005, .1))) +
   annotate('label',x=-Inf,y=Inf,hjust=1,vjust=0,
-           label= length(unique(alleles_tcr$donor)) %+% " individuals" )
+           label= length(unique(alleles_tcr$donor)) %+% " ind." )
 
 ## Fig 2B  TRBV N alleles ----
 fig2b<-allelesStats_tcr %>% 
@@ -1254,7 +1258,7 @@ fig2b<-allelesStats_tcr %>%
   scale_color_manual(values=c("white","black"))+
   scale_y_continuous(expand = expansion(mult = c(0.005, .1))) +
   annotate('label',x=-Inf,y=Inf,hjust=1,vjust=0,
-           label= length(unique(alleles_tcr$donor)) %+% " individuals" )
+           label= length(unique(alleles_tcr$donor)) %+% " ind." )
 
 
 ## Fig 2D  TRAJ N alleles ----
@@ -1282,7 +1286,7 @@ fig2d<-allelesStats_tcr %>%
   scale_y_continuous(expand = expansion(mult = c(0.005, .05)),
                      breaks = c(0,1,2)) +
   annotate('label',x=-Inf,y=Inf,hjust=1,vjust=0,
-           label= length(unique(alleles_tcr$donor)) %+% " individuals" )
+           label= length(unique(alleles_tcr$donor)) %+% " ind." )
 
 ## Fig 2E  TRBJ N alleles ----
 fig2e<-allelesStats_tcr %>% 
@@ -1311,7 +1315,7 @@ fig2e<-allelesStats_tcr %>%
   scale_y_continuous(expand = expansion(mult = c(0.005, .05)),
                      breaks = c(0,1,2)) +
   annotate('label',x=-Inf,y=Inf,hjust=1,vjust=0,
-           label= length(unique(alleles_tcr$donor)) %+% " individuals" )
+           label= length(unique(alleles_tcr$donor)) %+% " ind." )
 
 
 
@@ -1540,37 +1544,35 @@ library(patchwork)
 legend <- cowplot::get_legend(
   # create some space to the left of the legend
   fig2a + theme(legend.position="bottom",
-                legend.box.margin = margin(0, 0, 0, 12),
-                legend.title=element_text(size=14), 
-                legend.text=element_text(size=12))+
+                legend.box.margin = margin(0, 0, 0, 12))+
     scale_colour_discrete(guide = "none")+
     labs(fill="Alleles")
 )
-
-fig2a<-fig2a+theme(axis.title.y = element_text(size=14),     
-        axis.text.x = element_text(size=12),     
-        axis.text.y = element_text(size=12),     
-        strip.text = element_text(size=14))
-fig2b<-fig2b+theme(axis.title.y = element_text(size=14),     
-                   axis.text.x = element_text(size=12),     
-                   axis.text.y = element_text(size=12),     
-                   strip.text = element_text(size=14))
-fig2c<-fig2c+theme(axis.title.y = element_text(size=14),     
-                   axis.text.x = element_text(size=12),     
-                   axis.text.y = element_text(size=12),     
-                   strip.text = element_text(size=14))
-fig2d<-fig2d+theme(axis.title.y = element_text(size=14),     
-                   axis.text.x = element_text(size=12),     
-                   axis.text.y = element_text(size=12),     
-                   strip.text = element_text(size=14))
-fig2e<-fig2e+theme(axis.title.y = element_text(size=14),     
-                   axis.text.x = element_text(size=12),     
-                   axis.text.y = element_text(size=12),     
-                   strip.text = element_text(size=14))
-fig2f<-fig2f+theme(axis.title.y = element_text(size=14),     
-                   axis.text.x = element_text(size=12),     
-                   axis.text.y = element_text(size=12),     
-                   strip.text = element_text(size=14))
+# 
+# fig2a<-fig2a+theme(axis.title.y = element_text(size=14),     
+#         axis.text.x = element_text(size=12),     
+#         axis.text.y = element_text(size=12),     
+#         strip.text = element_text(size=14))
+# fig2b<-fig2b+theme(axis.title.y = element_text(size=14),     
+#                    axis.text.x = element_text(size=12),     
+#                    axis.text.y = element_text(size=12),     
+#                    strip.text = element_text(size=14))
+# fig2c<-fig2c+theme(axis.title.y = element_text(size=14),     
+#                    axis.text.x = element_text(size=12),     
+#                    axis.text.y = element_text(size=12),     
+#                    strip.text = element_text(size=14))
+# fig2d<-fig2d+theme(axis.title.y = element_text(size=14),     
+#                    axis.text.x = element_text(size=12),     
+#                    axis.text.y = element_text(size=12),     
+#                    strip.text = element_text(size=14))
+# fig2e<-fig2e+theme(axis.title.y = element_text(size=14),     
+#                    axis.text.x = element_text(size=12),     
+#                    axis.text.y = element_text(size=12),     
+#                    strip.text = element_text(size=14))
+# fig2f<-fig2f+theme(axis.title.y = element_text(size=14),     
+#                    axis.text.x = element_text(size=12),     
+#                    axis.text.y = element_text(size=12),     
+#                    strip.text = element_text(size=14))
 
 
 fig2<-plot_grid(fig2a,fig2b,fig2c,fig2d,
@@ -1581,10 +1583,10 @@ fig2<-plot_grid(fig2a,fig2b,fig2c,fig2d,
                 rel_widths = c(1,1,1.4,1,1),
                 labels=c("A","B","C","D","E"),
                 nrow=1)
-ggsave(filename = "Fig2.pdf", plot= fig2,device = "pdf",
-       width = 16,height = 8,units = "in",bg="white")
-ggsave(filename = "Fig2.png", plot= fig2,device = "png",
-       width = 16,height = 8,units = "in",bg="white")
+ggsave(filename = "plots/Fig2.pdf", plot= fig2,device = "pdf",
+       width = 12,height = 8,units = "in",bg="white")
+ggsave(filename = "plots/Fig2.png", plot= fig2,device = "png",
+       width = 12,height = 8,units = "in",bg="white")
 
 
 

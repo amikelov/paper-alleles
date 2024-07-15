@@ -979,7 +979,7 @@ mixcr_allele_files<-c(dir("~/paper_alleles/benchmarking/mixcr/noumi/findAlleles"
 alleles_mixcr<-read_tsv(mixcr_allele_files,id="fileName") %>% 
   filter(str_detect(geneName,"IGHV|IGHJ")) %>% 
   mutate(donor = str_extract(fileName,"(SC|W)-[0-9]{1,3}"),
-         depth = str_extract(fileName,"10K|50K|100K|500K"),
+         depth = str_extract(fileName,"10K|25K|50K|100K|500K"),
          depth=ifelse(is.na(depth),"full",depth),
          protocol = str_extract(fileName,"noumi|5race"),
          tool="mixcr",
@@ -1098,7 +1098,6 @@ compareJs<-F
 alleleComparison<-
   apply(tools_depths, 1, function(tldpt){
     regex_full_join(
-      
       igenotyper_seq %>%
                       filter(donor == tldpt["donor"]) %>% 
                       filter(!str_detect(alleleName,"IGHJ")|compareJs),
@@ -1140,7 +1139,6 @@ alleleComparison %<>%
               select(geneName,
                      depth,
                      donor,
-                     status,
                      enoughInfo) %>%
               unique(),
             by= c("donor",
@@ -1180,7 +1178,7 @@ alleleComparison %<>%
              nClonesInAllele<=10 ~ "lowExpression",
              nNaive<=2 ~ "noSuchNaiveExpress",
              is.na(alleleName.iGenotyper) & geneNotCatchedInPacBio ~ "geneNotCatchedInPacBio",
-             tool=="mixcr" & enoughInfo == F & (status == "COULD_NOT_BE_ALIGNED_ON_KNOWN_VARIANT" | status == "NO_CLONES_TO_SEARCH") ~ "notEnoughInfo",
+             tool=="mixcr" & enoughInfo == F ~ "notEnoughInfo",
              tool=="tigger" & nClonesTotalInGene<50 & inStartRef=="FALSE" ~ "notEnoughInfo",
             # nClonesTotalInGene<50  ~ "tooFewClonesInRepseqNotEnoughInfo",
             !is.na(alleleName.tool) & !is.na(alleleName.iGenotyper) ~ "match",
@@ -1239,9 +1237,10 @@ comparisonStats<-
   ungroup() %>% 
   complete(matchStatus,depth,nesting(donor,tool),fill=list(N=0)) %>% 
   group_by(donor,tool) %>% 
-  mutate(nAllelesTotal=sum(N[matchStatus=="match" | matchStatus== "falseNegative"])) %>% 
+  mutate(nAllelesTotal=sum(N[matchStatus == "match" | matchStatus == "falseNegative"])) %>% 
   mutate(fraction=N/nAllelesTotal) %>% 
-  left_join(stats %>% select(donor,totalReads:readsUsedInClonotypes)) 
+  left_join(stats %>% select(donor,totalReads:readsUsedInClonotypes)) |> 
+  replace_na(list(fraction=0))
 
 
 # Fraction matched
@@ -1477,8 +1476,7 @@ comparisonStats<-
   mutate(nAllelesTotal=sum(N[matchStatus=="match" | matchStatus== "falseNegative"])) %>% 
   mutate(fraction=N/nAllelesTotal) %>% 
   left_join(stats %>% select(donor,totalReads:readsUsedInClonotypes)) %>%
-    left_join(protocol_donor) %>% 
-  replace_na(list(fraction=0))
+    left_join(protocol_donor) 
 
 give.n <- function(y){
   return(data.frame(
@@ -2109,28 +2107,6 @@ ggsave("~/paper_alleles/analysis/plots/figS1.png",figS1,units = "in",width = 8,h
 
 ```
 
-##Which donors were the worst
-
-```{r}
-donorsFail<-
-  left_join(comparisonStats %>% filter(matchStatus=="match"),
-            comparisonStats_full %>% filter(matchStatus=="match"),
-            by=c("donor","tool")) %>% 
-  mutate(fratctionRatio=fraction.x/fraction.y,.after=donor) %>% 
-  relocate(N.x,N.y,nAllelesTotal.x,nAllelesTotal.y,.after=tool)
-
-```
-
-Which changed
-
-```{r}
-
-whichChanged<-function(donor){
-  
-  
-}
-```
-
 ## FN vs FPs
 
 ```{r}
@@ -2157,7 +2133,7 @@ whichChanged<-function(donor){
         mutate(relativeMutations=mapply(mutationsAlaMixcr, alleleSeq.FN,alleleSeq.FP) %>% str_remove("D.1 D.2 D.3 D.4 D.5 D.6 "), clearedRelMut=relativeMutations %>% str_extract_all("S.\\d{1,3}.") %>% sapply(paste, collapse=" ")) %>% relocate(clearedRelMut, .after=donor) %>%  View()
 ```
 
-## SHM
+## FigS4 SHM
 
 ```{r}
 igenotyper_muts<-read_tsv(dir("~/paper_alleles/benchmarking/igenotyper/mixcr/mutations",
@@ -2177,9 +2153,13 @@ shmStats <- igenotyper_muts |>
 g1<-comparisonStats %>%
     filter(
         totalClonotypes > 3000,
-        matchStatus %in% c("falseNegative")
+        matchStatus %in% c("falseNegative"),
+        tool=="mixcr"
     ) %>%
-    mutate(matchStatus = factor(matchStatus, levels = c("falseNegative", "match", "falsePositive"))) %>%
+    mutate(matchStatus = factor(matchStatus, levels = c("falseNegative", "match", "falsePositive")),
+           fraction=ifelse(donor=="W-43",0.1153846153,fraction),
+           fraction=ifelse(donor=="W-70",0.1136363636,fraction),
+           fraction=ifelse(donor=="W-107",0.125,fraction)) %>%
     left_join(shmStats, by = "donor") %>%
     ggplot(aes(y = fraction, x = meanSHM)) +
     geom_point() +
@@ -2187,12 +2167,13 @@ g1<-comparisonStats %>%
     stat_cor(aes(label = paste(..r.label.., ..p.label.., sep = "~`,`~")), method = "pearson",
              label.x.npc = "middle", label.y.npc = "top") +
     theme_bw()+
-   labs(y="Fraction of alleles\nsupported by long reads",x = "Mean SHM level in a sample")
+   labs(y="Fraction of\nmissed alleles",x = "Mean SHM level in a sample")
 
 g2<-comparisonStats %>%
     filter(
         totalClonotypes > 3000,
-        matchStatus %in% c("falsePositive")
+        matchStatus %in% c("falsePositive"),
+        tool=="mixcr"
     ) %>%
     mutate(matchStatus = factor(matchStatus, levels = c("falseNegative", "match", "falsePositive"))) %>%
     left_join(shmStats, by = "donor") %>%
@@ -2206,6 +2187,7 @@ g2<-comparisonStats %>%
 
 ```
 
+##UMI vs non-UMI
 
 ```{r}
 
@@ -2217,7 +2199,10 @@ g3<-comparisonStats  %>%
         totalClonotypes>3000,
         matchStatus %in% c("match"),
         tool=="mixcr") %>%   #,"tooFewClonesInRepseqNotEnoughInfo")) %>% 
-    mutate(matchStatus=factor(matchStatus,levels=c("falseNegative","match","falsePositive"))) %>% 
+    mutate(matchStatus=factor(matchStatus,levels=c("falseNegative","match","falsePositive")),
+           fraction=ifelse(donor=="W-43",1-0.1153846153,fraction),
+           fraction=ifelse(donor=="W-70",1-0.1136363636,fraction),
+           fraction=ifelse(donor=="W-107",1-0.125,fraction)) %>% 
     ggplot(aes(y=fraction,x=protocol))+
     geom_boxplot(fill="#198020")+
  #   facet_grid( ~ tool , labeller = labeller(tool = facet_labels))+
@@ -2225,7 +2210,7 @@ g3<-comparisonStats  %>%
   scale_x_discrete(labels = c("5race" = "With UMIs", "noumi" = "Without UMIs")) +
     stat_compare_means(method = "kruskal", label.x = 1.35, label.y = 0.0)+
   theme_bw()+
-  labs(y="Fraction of alleles supported by long reads")
+  labs(y="Fraction of alleles\nsupported by long reads")
 
 g4<-comparisonStats  %>% 
   left_join(protocol_donor,by="donor") |> 
@@ -2242,17 +2227,792 @@ g4<-comparisonStats  %>%
     stat_compare_means(method = "kruskal", label.x = 1.5, label.y = 7.5)+
   theme_bw()+
  
-  labs(y="# potential false positive calls")
+  labs(y="# potential false\npositive calls")
 
 ```
-
 
 ```{r}
-plot_grid(plot_grid(g1,g2,nrow = 2),plot_grid(g3,g4,ncol = 2),nrow=2,rel_heights = c(1,0.5))
+
+
+figS4<-plot_grid(
+  plot_grid(g3,g4,ncol = 2,labels=c("A","B")),
+  plot_grid(g1,g2,nrow = 2,labels=c("C","D")),
+  rel_heights = c(0.7,1.2),nrow=2
+  )
+                  
+
+ggsave(filename = "plots/figS4.pdf", plot= figS4,device = "pdf",
+       width = 8,height =6,units = "in",bg="white")
+ggsave(filename = "plots/figS4.png", plot= figS4,device = "png",
+       width = 8,height = 8,units = "in",bg="white")
 ```
 
+#Citations
 
 ```{r}
 grateful::cite_packages(out.dir = ".",citation.style = "apa-6th-edition")
 ```
 
+#FigS3 Time benchmarking plot
+
+```{r}
+donorsForBench<-comparisonStats |> filter(tool=='mixcr',depth=='full',totalClonotypes>3000) |> pull(donor) |> unique() 
+
+names(bench_full)<-dir("~/paper_alleles/benchmarking/immcantation_fasta",
+                  pattern="_db-pass.tsv",
+                  full.names = T) |> 
+  str_extract("S?[WC]-[0-9]{1,3}")
+
+figS3<-bench_full[names(bench_full) %in% donorsForBench] |> 
+    keep( ~ is_tibble(.x)) |> bind_rows(.id="donor") |> 
+    mutate(total_time.tigger = as.numeric(as_bench_time(total_time))) |> 
+  left_join(
+    c(
+      dir("~/paper_alleles/benchmarking/mixcr/5race/findAlleles", pattern = "time.log",full.names = T),
+      dir("~/paper_alleles/benchmarking/mixcr/noumi/findAlleles", pattern = "time.log",full.names = T)
+    ) |> 
+      read_tsv(id='filename',col_names = c('empty','real','user',"sys","avmem","maxmem")) |> 
+      mutate(donor=filename |>  str_extract("S?[WC]-[0-9]{1,3}"),
+             total_time.mixcr=str_remove(real," real,") |> as.numeric()) |> 
+      select(donor,total_time.mixcr),
+    by="donor"
+  ) |> 
+  pivot_longer(cols=starts_with("total_time."),names_to = "tool") |> 
+  mutate(tool=str_remove(tool,"total_time.")) |> 
+  ggplot(aes(x=tool,y=value,fill=tool))+
+  geom_boxplot()+
+  geom_point()+
+  theme_bw()+
+  scale_fill_manual(values = mi_dark,labels=c("MiXCR","TIgGER"))+
+  stat_compare_means(method="wilcox")+
+  scale_x_discrete(labels=c(mixcr="MiXCR",  tigger="TIgGER"))+
+  labs(y="Time (s)", x= "Tool")
+
+ggsave(filename = "plots/figS3.pdf", plot= figS3,device = "pdf",
+       width = 6,height =4,units = "in",bg="white")
+ggsave(filename = "plots/figS3.png", plot= figS3,device = "png",
+       width = 6,height = 4,units = "in",bg="white")
+```
+
+#25K
+
+```{r}
+
+fig25k_match <- comparisonStats  %>%
+  filter(totalClonotypes > 3000,
+         matchStatus %in% c("match"),
+         depth == "25K") %>%
+  ggplot(aes(y = fraction, x = depth, fill = tool)) +
+  geom_boxplot(outlier.shape = NA,
+               position = position_dodge2(preserve = "single")) +
+  facet_wrap(~ matchStatus,
+             labeller = labeller(
+               inStartRef = c(`FALSE` = "Absent in starting reference library",
+                              `TRUE` = "Present in starting reference library"),
+               matchStatus = c(
+                 match = "Alleles supported by long reads",
+                 falseNegative = "Alleles missed",
+                 falsePositive = "Alleles not supported by long reads"
+               )
+             ),
+             nrow = 2) +
+  geom_point(position = position_dodge(0.75, preserve = 'total')) +
+  theme_bw() +
+  scale_fill_manual(values = mi_dark, labels = c("MiXCR", "TIgGER")) +
+  labs(y = "Fraction of detected alleles",
+       x = "",
+       fill = "Genotyping tool") +
+  theme(legend.position = "top",
+        strip.background = element_rect(fill = "white")) +
+  stat_summary(
+    fun.data = give.n,
+    geom = "text",
+    size = 3,
+    position = position_dodge(0.75, preserve = 'total')
+  ) +
+  stat_summary(
+    fun.data = give.median,
+    geom = "text",
+    size = 3,
+    position = position_dodge(0.75, preserve = 'total')
+  )
+
+
+ggsave(filename = "plots/Fig25K_matched.png", plot= fig25k,device = "png",
+               width = 6,height = 4,units = "in",bg="white")
+ggsave(filename = "plots/Fig25K_matched.png", plot= fig25k,device = "png",
+               width = 6,height = 4,units = "in",bg="white")
+```
+
+```{r}
+ggplot(aes(y = fraction, x = tool, fill = tool)) +
+  geom_boxplot(outlier.shape = NA) +
+  facet_grid(~ matchStatus,
+             labeller = labeller(
+               inStartRef =
+                 c(`FALSE` = "Absent in starting reference library",
+                   `TRUE` = "Present in starting reference library"),
+               matchStatus = c(
+                 match = "Alleles supported\nby long reads",
+                 falseNegative = "Alleles missed",
+                 falsePositive = "Alleles not supported\nby long reads"
+               )
+             )) +
+  geom_point(position = position_dodge(width = 0.75)) +
+  theme_bw() +
+  scale_fill_manual(values = mi_dark, labels = c("MiXCR", "TIgGER")) +
+  labs(y = "Fraction of detected alleles",
+       x = "Genotyping tool",
+       fill = "Genotyping\ntool") +
+  stat_summary(fun.data = give.n,
+               geom = "text",
+               size = 3) +
+  stat_summary(fun.data = give.median,
+               geom = "text",
+               size = 3) +
+  scale_x_discrete(labels = c("MiXCR", "TIgGER")) +
+  theme(
+    legend.position = "none",
+    strip.background = element_rect(fill = "white"),
+    axis.title.x = element_blank()
+  )
+
+comparisonStats <-
+  alleleComparison %>%
+  filter(depth == "full") %>%
+  ungroup() %>%
+  group_by(donor, depth, tool, matchStatus) %>%
+  # n_disctinct because some of the tools' findings match to multiple genes, while may be the same in sequence
+  summarise(N = n_distinct(alleleSeq.tool, alleleName.iGenotyper)) %>%
+  ungroup() %>%
+  complete(matchStatus, depth, nesting(donor, tool), fill = list(N = 0)) %>%
+  group_by(donor, tool) %>%
+  mutate(nAllelesTotal = sum(N[matchStatus == "match" |
+                                 matchStatus == "falseNegative"])) %>%
+  mutate(fraction = N / nAllelesTotal) %>%
+  left_join(stats %>% select(donor, totalReads:readsUsedInClonotypes))
+comparisonStats  %>%
+  filter(totalClonotypes > 3000,
+         matchStatus %in% c("match")) %>%   #,"tooFewClonesInRepseqNotEnoughInfo")) %>%
+  mutate(matchStatus = factor(
+    matchStatus,
+    levels = c("falseNegative", "match", "falsePositive")
+  )) %>%
+  ggplot(aes(y = fraction, x = tool, fill = tool)) +
+  geom_boxplot(outlier.shape = NA) +
+  facet_grid(~ matchStatus,
+             labeller = labeller(
+               inStartRef =
+                 c(`FALSE` = "Absent in starting reference library",
+                   `TRUE` = "Present in starting reference library"),
+               matchStatus = c(
+                 match = "Alleles supported\nby long reads",
+                 falseNegative = "Alleles missed",
+                 falsePositive = "Alleles not supported\nby long reads"
+               )
+             )) +
+  geom_point(position = position_dodge(width = 0.75)) +
+  theme_bw() +
+  scale_fill_manual(values = mi_dark, labels = c("MiXCR", "TIgGER")) +
+  labs(y = "Fraction of detected alleles",
+       x = "Genotyping tool",
+       fill = "Genotyping\ntool") +
+  stat_summary(fun.data = give.n,
+               geom = "text",
+               size = 3) +
+  stat_summary(fun.data = give.median,
+               geom = "text",
+               size = 3) +
+  scale_x_discrete(labels = c("MiXCR", "TIgGER")) +
+  theme(
+    legend.position = "none",
+    strip.background = element_rect(fill = "white"),
+    axis.title.x = element_blank()
+  )
+
+
+comparisonStats %>%
+  filter(totalClonotypes > 3000,
+         matchStatus %in% c("falseNegative"),
+         tool == "mixcr") %>%
+  mutate(matchStatus = factor(
+    matchStatus,
+    levels = c("falseNegative", "match", "falsePositive")
+  )) %>%
+  left_join(shmStats, by = "donor") %>%
+  ggplot(aes(y = fraction, x = meanSHM)) +
+  geom_point() +
+  #facet_wrap(~tool) +
+  stat_cor(
+    aes(label = paste(..r.label.., ..p.label.., sep = "~`,`~")),
+    method = "pearson",
+    label.x.npc = "middle",
+    label.y.npc = "top"
+  ) +
+  theme_bw() +
+  labs(y = "Fraction of\nmissed alleles", x = "Mean SHM level in a sample")
+
+comparisonStats %>%
+  filter(totalClonotypes > 3000,
+         matchStatus %in% c("falseNegative"),
+         tool == "mixcr") %>%
+  mutate(matchStatus = factor(
+    matchStatus,
+    levels = c("falseNegative", "match", "falsePositive")
+  )) %>%
+  left_join(shmStats, by = "donor") %>% View("shm")
+
+comparisonStats %>%
+  filter(totalClonotypes > 3000,
+         matchStatus %in% c("match"),
+         tool == "mixcr") %>%
+  mutate(matchStatus = factor(
+    matchStatus,
+    levels = c("falseNegative", "match", "falsePositive")
+  )) %>%
+  left_join(shmStats, by = "donor") %>%
+  ggplot(aes(y = fraction, x = meanSHM)) +
+  geom_point() +
+  #facet_wrap(~tool) +
+  stat_cor(
+    aes(label = paste(..r.label.., ..p.label.., sep = "~`,`~")),
+    method = "pearson",
+    label.x.npc = "middle",
+    label.y.npc = "top"
+  ) +
+  theme_bw() +
+  labs(y = "Fraction of\nmissed alleles", x = "Mean SHM level in a sample")
+comparisonStats %>%
+  filter(totalClonotypes > 3000,
+         matchStatus %in% c("match"),
+         tool == "mixcr") %>%
+  mutate(matchStatus = factor(
+    matchStatus,
+    levels = c("falseNegative", "match", "falsePositive")
+  )) %>%
+  left_join(shmStats, by = "donor") %>%
+  ggplot(aes(y = fraction, x = tool)) +
+  geom_boxplot() +
+  #facet_wrap(~tool) +
+  stat_cor(
+    aes(label = paste(..r.label.., ..p.label.., sep = "~`,`~")),
+    method = "pearson",
+    label.x.npc = "middle",
+    label.y.npc = "top"
+  ) +
+  theme_bw() +
+  labs(y = "Fraction of\nmissed alleles", x = "Mean SHM level in a sample")
+comparisonStats %>%
+  filter(totalClonotypes > 3000,
+         matchStatus %in% c("match"),
+         tool == "mixcr") %>%
+  mutate(matchStatus = factor(
+    matchStatus,
+    levels = c("falseNegative", "match", "falsePositive")
+  )) %>%
+  left_join(shmStats, by = "donor") %>%
+  ggplot(aes(y = fraction, x = tool)) +
+  geom_boxplot() +
+  #facet_wrap(~tool) +
+  stat_cor(
+    aes(label = paste(..r.label.., ..p.label.., sep = "~`,`~")),
+    method = "pearson",
+    label.x.npc = "middle",
+    label.y.npc = "top"
+  ) +
+  theme_bw() +
+  labs(y = "Fraction of\nmissed alleles", x = "Mean SHM level in a sample") +
+  expand_limits(y = 0)
+
+
+comparisonStats %>%
+  filter(totalClonotypes > 3000,
+         matchStatus %in% c("match"),
+         tool == "mixcr") %>%
+  mutate(matchStatus = factor(
+    matchStatus,
+    levels = c("falseNegative", "match", "falsePositive")
+  )) %>%
+  left_join(shmStats, by = "donor") %>%
+  ggplot(aes(y = fraction, x = tool)) +
+  geom_boxplot() +
+  geom_point() +
+  #facet_wrap(~tool) +
+  stat_cor(
+    aes(label = paste(..r.label.., ..p.label.., sep = "~`,`~")),
+    method = "pearson",
+    label.x.npc = "middle",
+    label.y.npc = "top"
+  ) +
+  theme_bw() +
+  labs(y = "Fraction of\nmissed alleles", x = "Mean SHM level in a sample") +
+  expand_limits(y = 0)
+
+
+comparisonStats %>%
+  filter(totalClonotypes > 3000,
+         matchStatus %in% c("falseNegative"),
+         tool == "mixcr") %>%
+  mutate(matchStatus = factor(
+    matchStatus,
+    levels = c("falseNegative", "match", "falsePositive")
+  )) %>%
+  left_join(shmStats, by = "donor") %>% View()
+comparisonStats %>%
+  filter(totalClonotypes > 3000,
+         matchStatus %in% c("match"),
+         tool == "mixcr") %>%
+  mutate(matchStatus = factor(
+    matchStatus,
+    levels = c("falseNegative", "match", "falsePositive")
+  ), ) %>%
+  left_join(shmStats, by = "donor") %>%
+  ggplot(aes(y = fraction, x = tool)) +
+  geom_boxplot() +
+  geom_point() +
+  #facet_wrap(~tool) +
+  stat_cor(
+    aes(label = paste(..r.label.., ..p.label.., sep = "~`,`~")),
+    method = "pearson",
+    label.x.npc = "middle",
+    label.y.npc = "top"
+  ) +
+  theme_bw() +
+  labs(y = "Fraction of\nmissed alleles", x = "Mean SHM level in a sample") +
+  expand_limits(y = 0)
+comparisonStats %>%
+  filter(totalClonotypes > 3000,
+         matchStatus %in% c("match"),
+         tool == "mixcr") %>%
+  mutate(
+    matchStatus = factor(
+      matchStatus,
+      levels = c("falseNegative", "match", "falsePositive")
+    )
+  ) %>%
+  left_join(shmStats, by = "donor") %>%
+  ggplot(aes(y = fraction, x = tool)) +
+  geom_boxplot() +
+  geom_point() +
+  #facet_wrap(~tool) +
+  stat_cor(
+    aes(label = paste(..r.label.., ..p.label.., sep = "~`,`~")),
+    method = "pearson",
+    label.x.npc = "middle",
+    label.y.npc = "top"
+  ) +
+  theme_bw() +
+  labs(y = "Fraction of\nmissed alleles", x = "Mean SHM level in a sample") +
+  expand_limits(y = 0)
+comparisonStats %>%
+  filter(totalClonotypes > 3000,
+         matchStatus %in% c("match"),
+         tool == "mixcr") %>%
+  mutate(
+    matchStatus = factor(
+      matchStatus,
+      levels = c("falseNegative", "match", "falsePositive")
+    )
+  ) %>%
+  left_join(shmStats, by = "donor") %>%
+  ggplot(aes(y = fraction, x = tool)) +
+  geom_boxplot() +
+  geom_point() +
+  #facet_wrap(~tool) +
+  stat_cor(
+    aes(label = paste(..r.label.., ..p.label.., sep = "~`,`~")),
+    method = "pearson",
+    label.x.npc = "middle",
+    label.y.npc = "top"
+  ) +
+  theme_bw() +
+  labs(y = "Fraction of\nmissed alleles", x = "Mean SHM level in a sample") +
+  expand_limits(y = 0)
+comparisonStats %>%
+  filter(totalClonotypes > 3000,
+         matchStatus %in% c("falseNegative"),
+         tool == "mixcr") %>%
+  mutate(
+    matchStatus = factor(
+      matchStatus,
+      levels = c("falseNegative", "match", "falsePositive")
+    )
+  ) %>%
+  left_join(shmStats, by = "donor") %>%
+  ggplot(aes(y = fraction, x = meanSHM)) +
+  geom_point() +
+  #facet_wrap(~tool) +
+  stat_cor(
+    aes(label = paste(..r.label.., ..p.label.., sep = "~`,`~")),
+    method = "pearson",
+    label.x.npc = "middle",
+    label.y.npc = "top"
+  ) +
+  theme_bw() +
+  labs(y = "Fraction of\nmissed alleles", x = "Mean SHM level in a sample")
+plot_grid(
+  plot_grid(g3, g4, ncol = 2, labels = c("A", "B")),
+  plot_grid(g1, g2, nrow = 2, labels = c("C", "D")),
+  rel_heights = c(0.7, 1.2),
+  nrow = 2
+)
+g1 <- comparisonStats %>%
+  filter(totalClonotypes > 3000,
+         matchStatus %in% c("falseNegative"),
+         tool == "mixcr") %>%
+  mutate(
+    matchStatus = factor(
+      matchStatus,
+      levels = c("falseNegative", "match", "falsePositive")
+    )
+  ) %>%
+  left_join(shmStats, by = "donor") %>%
+  ggplot(aes(y = fraction, x = meanSHM)) +
+  geom_point() +
+  #facet_wrap(~tool) +
+  stat_cor(
+    aes(label = paste(..r.label.., ..p.label.., sep = "~`,`~")),
+    method = "pearson",
+    label.x.npc = "middle",
+    label.y.npc = "top"
+  ) +
+  theme_bw() +
+  labs(y = "Fraction of\nmissed alleles", x = "Mean SHM level in a sample")
+figS4 <- plot_grid(
+  plot_grid(g3, g4, ncol = 2, labels = c("A", "B")),
+  plot_grid(g1, g2, nrow = 2, labels = c("C", "D")),
+  rel_heights = c(0.7, 1.2),
+  nrow = 2
+)
+figS4
+comparisonStats  %>%
+  left_join(protocol_donor, by = "donor") |>
+  filter(totalClonotypes > 3000,
+         matchStatus %in% c("match"),
+         tool == "mixcr") %>%   #,"tooFewClonesInRepseqNotEnoughInfo")) %>%
+  mutate(
+    matchStatus = factor(
+      matchStatus,
+      levels = c("falseNegative", "match", "falsePositive")
+    )
+  ) %>%
+  ggplot(aes(y = fraction, x = protocol)) +
+  geom_boxplot(fill = "#198020") +
+  #   facet_grid( ~ tool , labeller = labeller(tool = facet_labels))+
+  # geom_point(position = position_dodge(width=0.75))+
+  scale_x_discrete(labels = c("5race" = "With UMIs", "noumi" = "Without UMIs")) +
+  stat_compare_means(method = "kruskal",
+                     label.x = 1.35,
+                     label.y = 0.0) +
+  theme_bw() +
+  labs(y = "Fraction of alleles\nsupported by long reads")
+3 <- comparisonStats  %>%
+  left_join(protocol_donor, by = "donor") |>
+  filter(totalClonotypes > 3000,
+         matchStatus %in% c("match"),
+         tool == "mixcr") %>%   #,"tooFewClonesInRepseqNotEnoughInfo")) %>%
+  mutate(
+    matchStatus = factor(
+      matchStatus,
+      levels = c("falseNegative", "match", "falsePositive")
+    )
+  ) %>%
+  ggplot(aes(y = fraction, x = protocol)) +
+  geom_boxplot(fill = "#198020") +
+  #   facet_grid( ~ tool , labeller = labeller(tool = facet_labels))+
+  # geom_point(position = position_dodge(width=0.75))+
+  scale_x_discrete(labels = c("5race" = "With UMIs", "noumi" = "Without UMIs")) +
+  stat_compare_means(method = "kruskal",
+                     label.x = 1.35,
+                     label.y = 0.0) +
+  theme_bw() +
+  labs(y = "Fraction of alleles\nsupported by long reads")
+g3 <- comparisonStats  %>%
+  left_join(protocol_donor, by = "donor") |>
+  filter(totalClonotypes > 3000,
+         matchStatus %in% c("match"),
+         tool == "mixcr") %>%   #,"tooFewClonesInRepseqNotEnoughInfo")) %>%
+  mutate(
+    matchStatus = factor(
+      matchStatus,
+      levels = c("falseNegative", "match", "falsePositive")
+    )
+  ) %>%
+  ggplot(aes(y = fraction, x = protocol)) +
+  geom_boxplot(fill = "#198020") +
+  #   facet_grid( ~ tool , labeller = labeller(tool = facet_labels))+
+  # geom_point(position = position_dodge(width=0.75))+
+  scale_x_discrete(labels = c("5race" = "With UMIs", "noumi" = "Without UMIs")) +
+  stat_compare_means(method = "kruskal",
+                     label.x = 1.35,
+                     label.y = 0.0) +
+  theme_bw() +
+  labs(y = "Fraction of alleles\nsupported by long reads")
+figS4 <- plot_grid(
+  plot_grid(g3, g4, ncol = 2, labels = c("A", "B")),
+  plot_grid(g1, g2, nrow = 2, labels = c("C", "D")),
+  rel_heights = c(0.7, 1.2),
+  nrow = 2
+)
+figS4
+ggsave(
+  filename = "plots/figS4.pdf",
+  plot = figS4,
+  device = "pdf",
+  width = 8,
+  height = 6,
+  units = "in",
+  bg = "white"
+)
+ggsave(
+  filename = "plots/figS4.png",
+  plot = figS4,
+  device = "png",
+  width = 8,
+  height = 8,
+  units = "in",
+  bg = "white"
+)
+comparisonStats %>%
+  filter(totalClonotypes > 3000,
+         matchStatus %in% c("falsePositive"),
+         tool == "mixcr") %>%
+  mutate(matchStatus = factor(
+    matchStatus,
+    levels = c("falseNegative", "match", "falsePositive")
+  )) |> View()
+comparisonStats %>%
+  filter(totalClonotypes > 3000,
+         matchStatus %in% c("falsePositive"),
+         tool == "mixcr") %>%
+  mutate(matchStatus = factor(
+    matchStatus,
+    levels = c("falseNegative", "match", "falsePositive")
+  )) %>%
+  left_join(shmStats, by = "donor") %>%
+  ggplot(aes(y = N, x = meanSHM)) +
+  geom_point() +
+  #facet_wrap(~tool) +
+  stat_cor(
+    aes(label = paste(..r.label.., ..p.label.., sep = "~`,`~")),
+    method = "pearson",
+    label.x.npc = "middle",
+    label.y.npc = "top"
+  ) +
+  theme_bw() +
+  labs(y = "# potential false\npositive calls", x = "Mean SHM level in a sample")
+comparisonStats %>%
+  filter(totalClonotypes > 3000,
+         matchStatus %in% c("falsePositive"),
+         tool == "mixcr") %>%
+  mutate(matchStatus = factor(
+    matchStatus,
+    levels = c("falseNegative", "match", "falsePositive")
+  ), ) %>%
+  left_join(shmStats, by = "donor") %>%
+  ggplot(aes(y = N, x = meanSHM)) +
+  geom_point() +
+  #facet_wrap(~tool) +
+  stat_cor(
+    aes(label = paste(..r.label.., ..p.label.., sep = "~`,`~")),
+    method = "pearson",
+    label.x.npc = "middle",
+    label.y.npc = "top"
+  ) +
+  theme_bw() +
+  labs(y = "# potential false\npositive calls", x = "Mean SHM level in a sample")
+figS6
+populationFreqs <- alleles_db %>%
+  filter(totalClonesCountForGene > 50,
+         ethnicity != "Unknown",
+         geneName %in% frequentVs) %>%
+  bind_rows(
+    alleles_db %>%
+      filter(totalClonesCountForGene > 50,
+             geneName %in% frequentVs) %>%
+      mutate(ethnicity = "All")
+  ) %>%
+  group_by(donor, geneName) %>%
+  mutate(zigosity = n(),
+         homozigous = ifelse(zigosity == 1, "1,1", as.character(zigosity))) %>%
+  separate_rows(homozigous, sep = ",") %>%
+  mutate(Ethnicity = factor(
+    str_replace(ethnicity, "Hispanic/Latino", "Hisp./Lat.") |>
+      str_replace("Caucasian", "Eur.") ,
+    levels = c("All", "Eur.", "African", "Asian", "Hisp./Lat.")
+  )) %>%
+  group_by(geneName, Ethnicity) %>%
+  mutate(totalNHaplotypesGene = n()) %>%
+  ungroup() %>%
+  group_by(geneName, alleleName, Ethnicity, totalNHaplotypesGene) %>%
+  summarize(
+    nHaplotypes = n(),
+    alleleFreq = nHaplotypes / dplyr::first(totalNHaplotypesGene)
+  ) %>%
+  ungroup() %>%
+  left_join(alleleSeq, by = "alleleName")  %>%
+  mutate(alleleNumber = str_remove(alleleName, ".*\\*"),
+         isNovel = alleleName %in% novelAlleles)
+aaGroups <- populationFreqs %>%
+  filter(Ethnicity == "All") %>%
+  group_by(geneName, alleleSeqAA) %>%
+  summarise(alleleAAFreq = sum(alleleFreq),
+            nSynonymousAlleles = n()) %>%
+  ungroup() %>%
+  group_by(geneName) %>%
+  mutate(alleleAASeqGroup = data.table::frank(dplyr::desc(alleleAAFreq), ties.method = "random")) %>%
+  ungroup()
+populationFreqs %<>%
+  left_join(aaGroups, by = c("geneName", "alleleSeqAA"))
+color_fun = colorRamp2(c(0, 0.25, 0.75, 1),
+                       c("#FAFAB4", "#8DDA7F", "#337E90", "#1C0F5C"))
+g_leg = Legend(col_fun = color_fun, title = "Population frequency")
+allVGenes <- populationFreqs %>%
+  filter(Ethnicity == "All") %>%
+  count(geneName) %>%
+  arrange(desc(n)) %>%
+  pull(geneName)
+allHeatmaps <-
+  lapply(allVGenes, function(v) {
+    heatmapMatrixFreqs <- populationFreqs %>%
+      filter(geneName == v) %>%
+      dplyr::group_by(alleleAASeqGroup) %>%
+      dplyr::mutate(freqInAll = alleleFreq[Ethnicity == "All"] %>%
+                      sum()) %>%
+      ungroup() %>%
+      mutate(alleleAASeqGroup = fct_reorder(factor(alleleAASeqGroup), alleleFreq, .desc = T)) %>%
+      dplyr::arrange(desc(freqInAll)) %>%
+      pivot_wider(
+        id_cols = Ethnicity,
+        names_from = c(alleleNumber, alleleAASeqGroup),
+        names_sep = "_",
+        values_from = alleleFreq,
+        id_expand = T
+      )
+    heatmapMatrixCounts <- populationFreqs %>%
+      filter(geneName == v) %>%
+      dplyr::group_by(alleleAASeqGroup) %>%
+      dplyr::mutate(freqInAll = alleleFreq[Ethnicity == "All"] %>%
+                      sum()) %>%
+      ungroup() %>%
+      mutate(alleleAASeqGroup = fct_reorder(factor(alleleAASeqGroup), alleleFreq, .desc = T)) %>%
+      dplyr::arrange(desc(freqInAll)) %>%
+      pivot_wider(
+        id_cols = Ethnicity,
+        names_from = c(alleleNumber, alleleAASeqGroup),
+        names_sep = "_",
+        values_from = nHaplotypes,
+        id_expand = T
+      )
+    alleleFeatures <- populationFreqs %>%
+      filter(geneName == v) %>%
+      group_by(alleleName, alleleNumber, isNovel) %>%
+      summarize(alleleFreq = alleleFreq[Ethnicity == "All"]) %>%
+      mutate(
+        novelCol = ifelse(isNovel, mi_bright[4], "black"),
+        novelFont = ifelse(isNovel, "bold", "plain")
+      )
+    alleleFeatures <-
+      alleleFeatures[match(
+        colnames(heatmapMatrixFreqs[, -1]) %>% str_remove("_.*"),
+        alleleFeatures$alleleNumber
+      ), ]
+    g <- Heatmap(
+      heatmapMatrixFreqs[, -1] ,
+      show_row_dend = F,
+      show_column_dend = F,
+      col = color_fun,
+      na_col = "white",
+      rect_gp = gpar(col = "darkgrey", lwd = 1),
+      row_split = factor(c("A", rep("R", 4)), levels = c("A", "R")),
+      row_gap = unit(0, "mm"),
+      row_title = NULL,
+      row_labels = heatmapMatrixFreqs[, 1]$Ethnicity,
+      row_names_side = "left",
+      cluster_rows = F,
+      column_split = factor(
+        colnames(heatmapMatrixFreqs[, -1]) %>% str_remove(".*_"),
+        levels = colnames(heatmapMatrixFreqs[, -1]) %>% str_remove(".*_") %>% unique()
+      ),
+      column_gap = unit(0, "mm"),
+      column_labels =  colnames(heatmapMatrixFreqs[, -1]) %>% str_remove("_.*"),
+      column_title = v,
+      column_title_gp = gpar(
+        fill = "white",
+        col = "black",
+        border = "white",
+        fontface = "bold"
+      ),
+      column_names_gp = gpar(
+        col = alleleFeatures$novelCol,
+        fontface = alleleFeatures$novelFont,
+        fontsize = 8
+      ),
+      column_names_rot = 0,
+      column_names_centered = T,
+      cluster_column_slices = FALSE,
+      border = TRUE,
+      border_gp = gpar(lwd = 2),
+      cell_fun = function(j, i, x, y, width, height, fill) {
+        if (!is.na(heatmapMatrixCounts[, -1][i, j])) {
+          if (heatmapMatrixFreqs[, -1][i, j] > 0.5) {
+            font_color = "white"
+          } else {
+            font_color = "black"
+          }
+          grid.text(heatmapMatrixCounts[, -1][i, j],
+                    x,
+                    y,
+                    gp = gpar(fontsize = 10, col = font_color))
+        }
+      },
+      show_heatmap_legend = FALSE
+    )
+    return(grid.grabExpr(draw(g)))
+  })
+figS5a <- cowplot::plot_grid(plotlist = allHeatmaps[1:6], nrow = 6)
+figS5b <- cowplot::plot_grid(plotlist = allHeatmaps[7:16], ncol = 2)
+figS5c <- cowplot::plot_grid(plotlist = allHeatmaps[17:42], ncol = 3)
+figS5 <-
+  plot_grid(
+    plot_grid(figS5a, figS5b, nrow = 2),
+    figS4c,
+    rel_widths = c(0.7, 1),
+    nrow = 1
+  )
+figS5 <- ggdraw() +
+  draw_plot(
+    figS5,
+    x = 0,
+    y = 0,
+    width = 1,
+    height = 1
+  ) +
+  draw_plot(
+    fig4_leg,
+    x = 0.75,
+    y = 0.017,
+    width = 0.3,
+    height = 0.1
+  )
+ggsave(
+  filename = "plots/FigS5.pdf",
+  plot = figS4,
+  device = "pdf",
+  width = 30,
+  height = 24,
+  units = "in",
+  bg = "white"
+)
+ggsave(
+  filename = "plots/FigS5.png",
+  plot = figS4,
+  device = "png",
+  width = 30,
+  height = 24,
+  units = "in",
+  bg = "white"
+)
+
+
+```
